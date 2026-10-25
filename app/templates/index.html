@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Shuttle Control Center — 本地控制台</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-hover: #0284c7;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; }
+    body { background: var(--bg); color: var(--text); padding: 24px; line-height: 1.5; }
+    header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; }
+    header h1 { font-size: 20px; font-weight: 600; color: var(--accent); }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 12px; font-weight: 600; text-transform: uppercase; }
+    .badge-idle { background: #475569; color: #fff; }
+    .badge-progress { background: var(--accent); color: #000; }
+    .badge-warn { background: var(--warning); color: #000; }
+    .badge-danger { background: var(--danger); color: #fff; }
+    .badge-success { background: var(--success); color: #000; }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 18px; }
+    .card h2 { font-size: 15px; font-weight: 600; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 14px; color: #e2e8f0; }
+
+    .form-group { margin-bottom: 12px; }
+    .form-group label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+    .form-control { width: 100%; background: #0f172a; border: 1px solid var(--border); color: #fff; padding: 8px 10px; border-radius: 4px; font-size: 13px; }
+    .form-control:focus { outline: none; border-color: var(--accent); }
+
+    .btn { background: var(--accent); color: #000; border: none; padding: 8px 16px; border-radius: 4px; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.2s; }
+    .btn:hover { background: var(--accent-hover); }
+    .btn-secondary { background: #334155; color: #fff; }
+    .btn-secondary:hover { background: #475569; }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-group { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+
+    pre { background: #0b1120; border: 1px solid var(--border); padding: 10px; border-radius: 4px; font-size: 12px; color: #a5f3fc; overflow-x: auto; max-height: 200px; }
+    .table-container { max-height: 250px; overflow-y: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border: 1px solid var(--border); padding: 6px 8px; text-align: left; }
+    th { background: #1e293b; color: var(--text-muted); position: sticky; top: 0; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div>
+      <h1>Local AI Shuttle Control Center</h1>
+      <small style="color: var(--text-muted);">Codex GUI ⇄ ChatGPT 穿梭总控台 (Phase 1 基础架构)</small>
+    </div>
+    <div id="stage-badge-container">
+      <span class="badge badge-progress" id="current-stage-badge">{{ checkpoint.stage.value if checkpoint else 'IDLE' }}</span>
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <!-- 1. 当前状态与恢复控制 -->
+    <div class="card">
+      <h2>状态机检查点与恢复 (State & Checkpoint)</h2>
+      <div class="form-group">
+        <label>当前阶段 (Stage)</label>
+        <input type="text" class="form-control" id="state-stage" value="{{ checkpoint.stage.value if checkpoint else 'IDLE' }}" readonly>
+      </div>
+      <div class="form-group">
+        <label>迭代轮次 (Iteration)</label>
+        <input type="text" class="form-control" id="state-iter" value="{{ checkpoint.iteration_id if checkpoint else 0 }}" readonly>
+      </div>
+      <div class="form-group">
+        <label>传输状态 / 失败信息</label>
+        <input type="text" class="form-control" id="state-status" value="{{ checkpoint.failure_details or checkpoint.transfer_status if checkpoint else 'None' }}" readonly>
+      </div>
+      <div class="btn-group">
+        <select class="form-control" id="target-stage-select" style="max-width: 200px;">
+          {% for st in all_stages %}
+          <option value="{{ st }}">{{ st }}</option>
+          {% endfor %}
+        </select>
+        <button class="btn btn-secondary" onclick="doTransition()">单步切换阶段</button>
+        <button class="btn btn-danger" onclick="doResetIdle()">安全重置为 IDLE</button>
+      </div>
+    </div>
+
+    <!-- 2. Codex 连接配置 -->
+    <div class="card">
+      <h2>Codex GUI 线程配置 (Codex Settings)</h2>
+      <div class="form-group">
+        <label>Git 仓库绝对路径</label>
+        <input type="text" class="form-control" id="codex-repo" value="{{ config.codex.repo_path if config else '' }}">
+      </div>
+      <div class="form-group">
+        <label>目标 GUI Thread ID</label>
+        <input type="text" class="form-control" id="codex-thread-id" value="{{ config.codex.thread_id if config else '' }}">
+      </div>
+      <div class="form-group">
+        <label>线程标题 / 会话目录</label>
+        <input type="text" class="form-control" id="codex-sessions" value="{{ config.codex.sessions_dir if config else '' }}">
+      </div>
+      <div class="btn-group">
+        <button class="btn" onclick="saveConfiguration()">保存配置</button>
+        <button class="btn btn-secondary" onclick="testCodexObservation()">探测 GUI 响应</button>
+      </div>
+    </div>
+
+    <!-- 3. ChatGPT 连接配置 -->
+    <div class="card">
+      <h2>ChatGPT 浏览器会话配置 (ChatGPT Settings)</h2>
+      <div class="form-group">
+        <label>会话 URL (Exact Conversation URL)</label>
+        <input type="text" class="form-control" id="chatgpt-url" value="{{ config.chatgpt.conversation_url if config else '' }}">
+      </div>
+      <div class="form-group">
+        <label>浏览器 Profile 目录</label>
+        <input type="text" class="form-control" id="chatgpt-profile" value="{{ config.chatgpt.profile_dir if config else '' }}">
+      </div>
+      <div class="form-group">
+        <label>浏览器通道 / 人机验证状态</label>
+        <input type="text" class="form-control" value="Channel: {{ config.chatgpt.browser_type if config else 'msedge' }} | Status: {{ config.chatgpt.human_verification_state if config else 'ready' }}" readonly>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-secondary" onclick="alert('Phase 1 浏览器观察适配器为只读/Mock 模式')">检查浏览器就绪状态</button>
+      </div>
+    </div>
+
+    <!-- 4. 报文预览与 Hash 校验 -->
+    <div class="card">
+      <h2>报文预览与 SHA-256 指纹 (Message Preview & Hash)</h2>
+      <div class="form-group">
+        <label>待发送/待注入报文文本</label>
+        <textarea class="form-control" id="preview-text" rows="3" placeholder="输入待计算 Hash 的文本或探测报告..."></textarea>
+      </div>
+      <div class="btn-group">
+        <button class="btn" onclick="computeHash()">计算 SHA-256 指纹</button>
+        <button class="btn btn-secondary" onclick="triggerMockTransfer()">执行 Phase 1 Mock 投递</button>
+      </div>
+      <div style="margin-top: 10px;">
+        <label style="font-size: 12px; color: var(--text-muted);">计算结果:</label>
+        <pre id="hash-output">未计算</pre>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 5. 事件时间轴与审计日志 -->
+  <div class="card" style="margin-top: 20px;">
+    <h2>审计与事件时间轴 (Event Timeline & Audit Logs)</h2>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>时间</th>
+            <th>阶段</th>
+            <th>类型</th>
+            <th>消息</th>
+          </tr>
+        </thead>
+        <tbody id="logs-tbody">
+          {% for l in logs %}
+          <tr>
+            <td>{{ l.id }}</td>
+            <td>{{ l.created_at }}</td>
+            <td><span class="badge badge-progress">{{ l.stage }}</span></td>
+            <td>{{ l.event_type }}</td>
+            <td>{{ l.message }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    async function refreshState() {
+      try {
+        const res = await fetch('/api/state');
+        if (res.ok) {
+          const data = await res.json();
+          document.getElementById('state-stage').value = data.stage;
+          document.getElementById('current-stage-badge').innerText = data.stage;
+          document.getElementById('state-iter').value = data.iteration_id;
+          document.getElementById('state-status').value = data.failure_details || data.transfer_status;
+        }
+      } catch (e) {
+        console.error('State refresh failed:', e);
+      }
+    }
+
+    async function doTransition() {
+      const target = document.getElementById('target-stage-select').value;
+      const res = await fetch('/api/stage/transition', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_stage: target, force: false })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert('切换阶段失败: ' + (data.detail || '未知错误'));
+      } else {
+        refreshState();
+      }
+    }
+
+    async function doResetIdle() {
+      const res = await fetch('/api/stage/transition', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_stage: 'IDLE', force: true })
+      });
+      if (res.ok) refreshState();
+    }
+
+    async function computeHash() {
+      const text = document.getElementById('preview-text').value;
+      const res = await fetch('/api/preview/hash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text })
+      });
+      const data = await res.json();
+      document.getElementById('hash-output').innerText = `SHA-256: ${data.sha256}\nLength: ${data.length_chars} chars\nPreview: ${data.preview}`;
+    }
+
+    async function testCodexObservation() {
+      const threadId = document.getElementById('codex-thread-id').value;
+      const res = await fetch('/api/codex/observe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ thread_id: threadId, after_line: 0 })
+      });
+      const data = await res.json();
+      if (data.status === 'found') {
+        document.getElementById('preview-text').value = data.preview;
+        document.getElementById('hash-output').innerText = `发现响应!\nTurn ID: ${data.turn_id}\nSHA-256: ${data.sha256}\nLength: ${data.length}`;
+        refreshState();
+      } else {
+        alert(data.message || '未找到新响应');
+      }
+    }
+
+    async function triggerMockTransfer() {
+      const text = document.getElementById('preview-text').value;
+      if (!text) {
+        alert('请先输入预览报文内容');
+        return;
+      }
+      const res = await fetch('/api/transfer/send_to_chatgpt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ report_text: text, iteration_id: 1 })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert('Mock 投递成功! 状态机已流转至 CHATGPT_WAITING');
+        refreshState();
+      } else {
+        alert('Mock 投递被拒绝: ' + (data.detail || '未知原因'));
+      }
+    }
+
+    async function saveConfiguration() {
+      // 读当前配置后增量更新
+      const res = await fetch('/api/config');
+      if (!res.ok) return;
+      const cfg = await res.json();
+      cfg.codex.repo_path = document.getElementById('codex-repo').value;
+      cfg.codex.thread_id = document.getElementById('codex-thread-id').value;
+      cfg.codex.sessions_dir = document.getElementById('codex-sessions').value;
+      cfg.chatgpt.conversation_url = document.getElementById('chatgpt-url').value;
+      cfg.chatgpt.profile_dir = document.getElementById('chatgpt-profile').value;
+
+      const saveRes = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg)
+      });
+      if (saveRes.ok) {
+        alert('配置保存成功');
+      } else {
+        alert('配置保存失败');
+      }
+    }
+
+    setInterval(refreshState, 3000);
+  </script>
+</body>
+</html>

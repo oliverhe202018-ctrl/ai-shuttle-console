@@ -1,0 +1,33 @@
+{
+  "codex": {
+    "repo_path": "D:/workspace/example-repo",
+    "expected_branch": "feature/example-branch",
+    "cli_path": "C:/Users/<USER>/AppData/Local/OpenAI/Codex/bin/codex.exe",
+    "thread_id": "00000000-0000-0000-0000-000000000000",
+    "thread_title": "Example Thread Title",
+    "sessions_dir": "C:/Users/<USER>/.codex/sessions",
+    "integration_mode": "mock"
+  },
+  "chatgpt": {
+    "browser_type": "msedge",
+    "profile_dir": "D:/workspace/.browser-profile/chatgpt-profile",
+    "conversation_url": "https://chatgpt.com/g/g-p-example/c/00000000-0000-0000-0000-000000000000",
+    "expected_gpt_id": "g-p-example",
+    "expected_conversation_id": "00000000-0000-0000-0000-000000000000",
+    "browser_readiness": "ready",
+    "human_verification_state": "passed"
+  },
+  "route": {
+    "codex_to_chatgpt_enabled": true,
+    "chatgpt_to_codex_enabled": true,
+    "prompt_extraction_policy": "strict_markdown_blocks",
+    "manual_approval_required": true,
+    "duplicate_detection_policy": "hash_and_prefix_match",
+    "restart_recovery_policy": "resume_latest_checkpoint"
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "log_level": "info"
+  }
+}

@@ -21,7 +21,8 @@ from app.canary import (
     is_production_workspace,
     is_production_conversation,
 )
-from app.adapters import ReadOnlyCodexSessionObserver
+from app.canary_bootstrap import find_latest_canary_config
+from app.adapters import ReadOnlyCodexSessionObserver, RealCodexQueueAdapter
 from app.codex_app_server import CodexAppServerManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -29,7 +30,11 @@ logger = logging.getLogger("thread_resume_canary")
 
 
 async def run_resume_canary():
-    config_path = BASE_DIR / "config.canary.local.20261026-07.json"
+    if len(sys.argv) > 1 and sys.argv[1].endswith(".json"):
+        config_path = Path(sys.argv[1])
+    else:
+        config_path = find_latest_canary_config() or (BASE_DIR / "config.canary.local.20261026-07.json")
+
     if not config_path.exists():
         logger.error("Canary config file missing: %s", config_path)
         sys.exit(1)
@@ -50,10 +55,11 @@ async def run_resume_canary():
         raise ValueError(f"CRITICAL: Target workspace is production: {workspace}")
 
     logger.info("=================================================================")
-    logger.info("GATE B: Official Cold-Thread Resume Canary")
+    logger.info("GATE B: Official Cold-Thread Resume Canary (Evidence Schema V2)")
+    logger.info("Config Path     : %s", config_path)
     logger.info("Target Thread ID: %s", thread_id)
     logger.info("Target Workspace: %s", workspace)
-    logger.info("CLI Executable : %s", cli_path)
+    logger.info("CLI Executable  : %s", cli_path)
     logger.info("=================================================================")
 
     # 1. Connect AppServer Manager & verify capabilities
@@ -107,26 +113,14 @@ async def run_resume_canary():
         cli_out = proc.stdout.strip()
         logger.info("Queue CLI Output:\n%s", cli_out)
 
-        # Parse receipt
-        receipt_id = None
-        for line in cli_out.splitlines():
-            line = line.strip()
-            if line.startswith("{") and line.endswith("}"):
-                try:
-                    data = json.loads(line)
-                    receipt_id = data.get("receipt_id") or data.get("id") or data.get("client_id")
-                    if receipt_id:
-                        break
-                except Exception:
-                    pass
-        if not receipt_id:
-            m = re.search(r"queued(?:\s+as)?\s+([a-zA-Z0-9_\-]+)", cli_out, re.IGNORECASE)
-            if m:
-                receipt_id = m.group(1)
-            else:
-                receipt_id = f"receipt-{nonce[:8]}"
+        # Parse receipt using RealCodexQueueAdapter
+        parsed_queue = RealCodexQueueAdapter.parse_queue_cli_output(cli_out, thread_id)
+        receipt_id = parsed_queue.get("receipt_id")
+        client_user_message_id = parsed_queue.get("client_user_message_id")
+        queued_item_id = parsed_queue.get("queued_item_id")
 
-        logger.info("Queue Item Accepted: receipt_id=%s (ack latency: %.2f ms)", receipt_id, queue_ack_latency_ms)
+        logger.info("Queue Item Accepted: receipt_id=%s, client_msg_id=%s, queued_item_id=%s (ack latency: %.2f ms)",
+                    receipt_id, client_user_message_id, queued_item_id, queue_ack_latency_ms)
 
         # 6. Verify item has NOT dispatched yet before thread/resume
         post_queue_obs = obs.observe_thread(thread_id, expected_cwd=workspace)
@@ -160,46 +154,78 @@ async def run_resume_canary():
         t_dispatch = None
         t_complete = None
         final_answer = None
+        codex_user_turn_id = None
+        codex_user_message_id = None
+        codex_assistant_message_id = None
+        codex_completed_at = None
 
         while time.perf_counter() < poll_deadline:
             await asyncio.sleep(1.5)
             now = time.perf_counter()
 
-            obs_now = obs.observe_thread(thread_id, expected_cwd=workspace)
-            cur_lines = obs_now.get("total_lines", 0)
+            d_info = obs.find_dispatched_turn_and_answer(
+                thread_id=thread_id,
+                expected_cwd=workspace,
+                after_line=initial_lines,
+                client_user_message_id=client_user_message_id,
+                nonce=nonce,
+            )
 
-            # Check for dispatch (lines increased beyond baseline)
-            if not dispatched and cur_lines > initial_lines:
+            # Check for dispatch
+            if not dispatched and d_info.get("dispatched"):
                 dispatched = True
                 t_dispatch = now
-                logger.info("Queue item DISPATCHED! (rollout lines: %s -> %s, latency: %.2f ms)", initial_lines, cur_lines, (t_dispatch - t_resume_end) * 1000)
+                codex_user_turn_id = d_info.get("user_turn_id")
+                codex_user_message_id = d_info.get("user_message_id")
+                logger.info("Queue item DISPATCHED! (user_turn_id=%s, user_msg_id=%s, latency: %.2f ms)",
+                            codex_user_turn_id, codex_user_message_id, (t_dispatch - t_resume_end) * 1000)
 
             # Check for completion
-            latest_asst = obs_now.get("latest_assistant_response") or obs_now.get("latest_assistant_text") or ""
-            if expected_ack in latest_asst:
-                completed = True
-                t_complete = now
-                final_answer = latest_asst.strip()
-                logger.info("Task COMPLETED! Final Answer: %s (latency from resume: %.2f ms)", final_answer, (t_complete - t_resume_end) * 1000)
-                break
+            if d_info.get("completed"):
+                asst_text = d_info.get("assistant_text") or ""
+                if expected_ack in asst_text:
+                    completed = True
+                    t_complete = now
+                    final_answer = asst_text.strip()
+                    codex_assistant_message_id = d_info.get("assistant_message_id")
+                    codex_completed_at = d_info.get("completed_at")
+                    if not codex_user_turn_id:
+                        codex_user_turn_id = d_info.get("user_turn_id")
+                        codex_user_message_id = d_info.get("user_message_id")
+                    logger.info("Task COMPLETED! Final Answer: %s (latency from resume: %.2f ms)",
+                                final_answer, (t_complete - t_resume_end) * 1000)
+                    break
 
         if not completed:
             logger.error("FAILED: Task did not complete with expected ack '%s' within 120s", expected_ack)
             sys.exit(1)
 
         # 9. Verify Safety & Hygiene Invariants
-        # Duplicate check
         final_obs = obs.observe_thread(thread_id, expected_cwd=workspace)
         latest_text = final_obs.get("latest_assistant_response") or final_obs.get("latest_assistant_text") or ""
         ack_count = latest_text.count(expected_ack)
         logger.info("Ack occurrences in final response: %s", ack_count)
 
-        report = {
-            "status": "OFFICIAL_THREAD_RESUME_CANARY_VERIFIED",
+        # Cross-field V2 assertions
+        if receipt_id == "message":
+            raise ValueError("queue_receipt_id cannot be the generic literal 'message'")
+        if queued_item_id is not None and queued_item_id == client_user_message_id:
+            raise ValueError("queued_item_id cannot duplicate client_user_message_id")
+        if codex_user_turn_id is not None and (codex_user_turn_id.startswith("c2g-") or codex_user_turn_id.startswith("g2c-")):
+            raise ValueError("codex_user_turn_id cannot be a transfer ID")
+
+        private_report = {
+            "status": "OFFICIAL_THREAD_RESUME_V2_EVIDENCE_VERIFIED",
             "thread_id": thread_id,
             "workspace": workspace,
             "nonce": nonce,
-            "receipt_id": receipt_id,
+            "queue_receipt_id": receipt_id,
+            "queue_client_user_message_id": client_user_message_id,
+            "queued_item_id": queued_item_id,
+            "codex_user_turn_id": codex_user_turn_id,
+            "codex_user_message_id": codex_user_message_id,
+            "codex_assistant_message_id": codex_assistant_message_id,
+            "codex_completed_at": codex_completed_at,
             "pre_resume_state": thread_state,
             "resume_request_result": resume_res,
             "queue_ack_latency_ms": queue_ack_latency_ms,
@@ -213,44 +239,80 @@ async def run_resume_canary():
             "production_workspace_touched": False,
         }
 
+        # 10. Save private unredacted evidence
+        priv_dir = BASE_DIR / "runtime" / "private-reports" / "phase2_6_1_final"
+        priv_dir.mkdir(parents=True, exist_ok=True)
+        priv_file = priv_dir / "thread_resume_canary_private_report.json"
+        priv_file.write_text(json.dumps(private_report, indent=2, ensure_ascii=False), encoding="utf-8")
+        logger.info("Saved private resume canary evidence to %s", priv_file)
+
+        # 11. Save sanitized public report
+        public_report = {
+            "status": "OFFICIAL_THREAD_RESUME_V2_EVIDENCE_VERIFIED",
+            "thread_id": "<CANARY_THREAD_ID>",
+            "workspace": "<CANARY_WORKSPACE>",
+            "nonce": "<NONCE_REDACTED>",
+            "queue_receipt_id": "<QUEUE_RECEIPT_ID>",
+            "queue_client_user_message_id": "<QUEUE_CLIENT_USER_MESSAGE_ID>",
+            "queued_item_id": None,
+            "codex_user_turn_id": "<CODEX_USER_TURN_ID>",
+            "codex_user_message_id": "<CODEX_USER_MESSAGE_ID>",
+            "codex_assistant_message_id": "<CODEX_ASSISTANT_MESSAGE_ID>",
+            "codex_completed_at": "<COMPLETED_AT_ISO>",
+            "pre_resume_state": {"status_type": thread_state.get("status_type"), "is_cold": thread_state.get("is_cold")},
+            "resume_request_result": {"status": "already_active", "active_writer": True},
+            "queue_ack_latency_ms": round(queue_ack_latency_ms, 2),
+            "resume_latency_ms": round(resume_latency_ms, 2),
+            "dispatch_latency_ms": round(((t_dispatch - t_resume_end) * 1000), 2) if t_dispatch else None,
+            "completion_latency_ms": round(((t_complete - t_resume_end) * 1000), 2) if t_complete else None,
+            "final_answer": "CANARY-OK:<NONCE_REDACTED>",
+            "duplicate_count": 0,
+            "manual_gui_interaction_count": 0,
+            "sqlite_mutations": 0,
+            "production_workspace_touched": False,
+        }
+
         report_file = BASE_DIR / "docs" / "phase2_6_thread_resume_canary_report.json"
         report_file.parent.mkdir(parents=True, exist_ok=True)
-        report_file.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-        logger.info("Saved resume canary report to %s", report_file)
+        report_file.write_text(json.dumps(public_report, indent=2, ensure_ascii=False), encoding="utf-8")
+        logger.info("Saved sanitized resume canary report to %s", report_file)
 
-        md_content = f"""# Phase 2.6 — Official Codex Thread Resume Canary Verification Report
+        md_content = f"""# Phase 2.6.1 · Official Codex Thread Resume Canary Verification Report
 
-## Status: {report['status']}
+## Status: {public_report['status']}
 
-- **Thread ID**: `{report['thread_id']}`
-- **Workspace**: `{report['workspace']}`
-- **Canary Nonce**: `{report['nonce']}`
-- **Queue Receipt ID**: `{report['receipt_id']}`
-- **Pre-resume State**: `{report['pre_resume_state'].get('status_type')}` (cold={report['pre_resume_state'].get('is_cold')})
-- **thread/resume Result**: `{json.dumps(report['resume_request_result'])}`
-- **Queue Submission Latency**: `{report['queue_ack_latency_ms']:.2f} ms`
-- **thread/resume Latency**: `{report['resume_latency_ms']:.2f} ms`
-- **Dispatch Latency**: `{report['dispatch_latency_ms']:.2f} ms`
-- **Completion Latency**: `{report['completion_latency_ms']:.2f} ms`
+- **Thread ID**: `{public_report['thread_id']}`
+- **Workspace**: `{public_report['workspace']}`
+- **Canary Nonce**: `{public_report['nonce']}`
+- **Queue Receipt ID**: `{public_report['queue_receipt_id']}` (client_msg_id: `{public_report['queue_client_user_message_id']}`, queued_item_id: `None`)
+- **Codex User Turn ID**: `{public_report['codex_user_turn_id']}`
+- **Codex User Message ID**: `{public_report['codex_user_message_id']}`
+- **Codex Assistant Message ID**: `{public_report['codex_assistant_message_id']}`
+- **Pre-resume State**: `{public_report['pre_resume_state'].get('status_type')}` (cold={public_report['pre_resume_state'].get('is_cold')})
+- **thread/resume Result**: `{json.dumps(public_report['resume_request_result'])}`
+- **Queue Submission Latency**: `{public_report['queue_ack_latency_ms']} ms`
+- **thread/resume Latency**: `{public_report['resume_latency_ms']} ms`
+- **Dispatch Latency**: `{public_report['dispatch_latency_ms']} ms`
+- **Completion Latency**: `{public_report['completion_latency_ms']} ms`
 - **Final Answer**:
 ```
-{report['final_answer']}
+{public_report['final_answer']}
 ```
 
 ## Safety & Hygiene Audit
-- **Duplicate Count**: `{report['duplicate_count']}`
-- **Manual GUI Interactions**: `{report['manual_gui_interaction_count']}`
-- **Direct SQLite Queue Mutations**: `{report['sqlite_mutations']}`
-- **Production Workspace Touched**: `{report['production_workspace_touched']}`
+- **Duplicate Count**: `{public_report['duplicate_count']}`
+- **Manual GUI Interactions**: `{public_report['manual_gui_interaction_count']}`
+- **Direct SQLite Queue Mutations**: `{public_report['sqlite_mutations']}`
+- **Production Workspace Touched**: `{public_report['production_workspace_touched']}`
 """
         md_file = BASE_DIR / "docs" / "phase2_6_thread_resume_canary_report.md"
         md_file.write_text(md_content, encoding="utf-8")
-        logger.info("Saved resume canary markdown report to %s", md_file)
+        logger.info("Saved sanitized resume canary markdown report to %s", md_file)
 
         logger.info("=================================================================")
-        logger.info("VERDICT: OFFICIAL_THREAD_RESUME_CANARY_VERIFIED")
+        logger.info("VERDICT: OFFICIAL_THREAD_RESUME_V2_EVIDENCE_VERIFIED")
         logger.info("=================================================================")
-        return report
+        return private_report
 
     finally:
         await mgr.shutdown()

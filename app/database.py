@@ -8,6 +8,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import aiosqlite
 
 from app.models import (
+    AutoRunAuthorization,
+    AutoRunIteration,
+    ChildTransferAuthorization,
+    CodexLifecycleEvent,
     AppConfig,
     CodexDeliveryClassification,
     CheckpointRecord,
@@ -216,6 +220,140 @@ class Database:
             for col_name, col_def in cr_new_cols:
                 if col_name not in cr_existing_cols:
                     await db.execute(f"ALTER TABLE canary_rounds ADD COLUMN {col_name} {col_def}")
+
+                        # Phase 2.6 schema: Controlled Auto Mode & Codex Lifecycle Events
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS auto_run_authorizations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP NOT NULL,
+                status TEXT NOT NULL,
+                max_iterations INTEGER NOT NULL,
+                iterations_completed INTEGER NOT NULL DEFAULT 0,
+                chatgpt_conversation_url TEXT NOT NULL,
+                chatgpt_conversation_id TEXT NOT NULL,
+                codex_thread_id TEXT NOT NULL,
+                codex_workspace TEXT NOT NULL,
+                config_fingerprint TEXT NOT NULL,
+                canary_mode BOOLEAN NOT NULL DEFAULT 1,
+                authorization_scope_version TEXT NOT NULL DEFAULT 'v1',
+                operator_confirmed BOOLEAN NOT NULL DEFAULT 0,
+                allow_cold_resume BOOLEAN NOT NULL DEFAULT 1,
+                experimental_queue_start_enabled BOOLEAN NOT NULL DEFAULT 0,
+                stop_reason TEXT,
+                error_details TEXT,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_auto_run_auth_rid ON auto_run_authorizations(run_id);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_auto_run_auth_status ON auto_run_authorizations(status);")
+
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS auto_run_iterations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                iteration_number INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                evidence_schema_version INTEGER DEFAULT 2,
+                codex_source_turn_id TEXT,
+                codex_source_message_id TEXT,
+                codex_output_hash TEXT,
+                c2g_transfer_id TEXT,
+                chatgpt_user_turn_id TEXT,
+                chatgpt_user_message_id TEXT,
+                chatgpt_user_raw_hash TEXT,
+                chatgpt_user_semantic_hash TEXT,
+                chatgpt_assistant_turn_id TEXT,
+                chatgpt_assistant_message_id TEXT,
+                chatgpt_assistant_response_hash TEXT,
+                planner_response_hash TEXT,
+                planner_classification TEXT,
+                extracted_prompt_hash TEXT,
+                g2c_transfer_id TEXT,
+                queue_receipt_id TEXT,
+                queue_client_user_message_id TEXT,
+                queued_item_id TEXT,
+                codex_target_turn_id TEXT,
+                codex_user_message_id TEXT,
+                codex_assistant_message_id TEXT,
+                codex_completed_at TIMESTAMP,
+                thread_resume_required BOOLEAN DEFAULT 0,
+                thread_resume_attempted BOOLEAN DEFAULT 0,
+                thread_resume_result TEXT,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                metrics JSON,
+                stop_reason TEXT,
+                error_details TEXT,
+                UNIQUE(run_id, iteration_number)
+            );
+            """)
+
+            # Migration for new columns on existing database
+            async with db.execute("PRAGMA table_info(auto_run_iterations)") as pragma_cur:
+                existing_cols = [row[1] for row in await pragma_cur.fetchall()]
+            new_cols = [
+                ("evidence_schema_version", "INTEGER DEFAULT 2"),
+                ("chatgpt_user_message_id", "TEXT"),
+                ("chatgpt_user_raw_hash", "TEXT"),
+                ("chatgpt_user_semantic_hash", "TEXT"),
+                ("chatgpt_assistant_message_id", "TEXT"),
+                ("chatgpt_assistant_response_hash", "TEXT"),
+                ("queue_client_user_message_id", "TEXT"),
+                ("codex_user_message_id", "TEXT"),
+                ("codex_completed_at", "TIMESTAMP"),
+            ]
+            for col_name, col_type in new_cols:
+                if col_name not in existing_cols:
+                    await db.execute(f"ALTER TABLE auto_run_iterations ADD COLUMN {col_name} {col_type}")
+
+            # Historical Evidence Migration (Section 13):
+            await db.execute("""
+            UPDATE auto_run_iterations
+            SET evidence_schema_version = 1
+            WHERE evidence_schema_version IS NULL OR evidence_schema_version = 0
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_auto_run_iter_run ON auto_run_iterations(run_id);")
+
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS child_transfer_authorizations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                child_auth_id TEXT NOT NULL UNIQUE,
+                parent_run_id TEXT NOT NULL,
+                iteration_number INTEGER NOT NULL,
+                transfer_id TEXT NOT NULL UNIQUE,
+                direction TEXT NOT NULL,
+                destination_identifier TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                config_fingerprint TEXT NOT NULL,
+                confirmation_token TEXT NOT NULL UNIQUE,
+                consumed BOOLEAN NOT NULL DEFAULT 0,
+                consumed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_child_auth_parent ON child_transfer_authorizations(parent_run_id);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_child_auth_tid ON child_transfer_authorizations(transfer_id);")
+
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS codex_lifecycle_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL UNIQUE,
+                run_id TEXT,
+                iteration_number INTEGER,
+                thread_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                pre_state TEXT,
+                post_state TEXT,
+                details JSON,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_lifecycle_ev_thread ON codex_lifecycle_events(thread_id);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_lifecycle_ev_run ON codex_lifecycle_events(run_id);")
 
             # Record schema version
             cursor = await db.execute("SELECT MAX(version) FROM schema_version")
@@ -629,6 +767,27 @@ class Database:
                 record.id = cursor.lastrowid
             await db.commit()
             return record
+
+    async def update_transfer_status(
+        self,
+        transfer_id: str,
+        status: str,
+        error_message: Optional[str] = None,
+        delivery_evidence: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            query = "UPDATE transfers SET status = ?, updated_at = CURRENT_TIMESTAMP"
+            params = [status]
+            if error_message is not None:
+                query += ", error_message = ?"
+                params.append(error_message)
+            if delivery_evidence is not None:
+                query += ", delivery_evidence = ?"
+                params.append(json.dumps(delivery_evidence))
+            query += " WHERE transfer_id = ?"
+            params.append(transfer_id)
+            await db.execute(query, tuple(params))
+            await db.commit()
 
     async def get_transfer_by_id(self, transfer_id: str) -> Optional[TransferRecord]:
         """Retrieve transfer record by transfer_id."""
@@ -1376,3 +1535,367 @@ class Database:
     async def get_latest_canary_round(self) -> Optional[Dict[str, Any]]:
         rounds = await self.get_canary_rounds()
         return rounds[-1] if rounds else None
+
+    # ----------------------------------------------------
+    # Phase 2.6 Controlled Auto Mode & Lifecycle Operations
+    # ----------------------------------------------------
+
+    async def save_auto_run_authorization(self, auth: Any) -> Dict[str, Any]:
+        data = auth.model_dump(mode="json") if hasattr(auth, "model_dump") else dict(auth)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+            INSERT INTO auto_run_authorizations (
+                run_id, created_at, expires_at, status, max_iterations, iterations_completed,
+                chatgpt_conversation_url, chatgpt_conversation_id, codex_thread_id,
+                codex_workspace, config_fingerprint, canary_mode, authorization_scope_version,
+                operator_confirmed, allow_cold_resume, experimental_queue_start_enabled,
+                stop_reason, error_details, started_at, completed_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(run_id) DO UPDATE SET
+                expires_at=excluded.expires_at,
+                status=excluded.status,
+                iterations_completed=excluded.iterations_completed,
+                stop_reason=excluded.stop_reason,
+                error_details=excluded.error_details,
+                started_at=excluded.started_at,
+                completed_at=excluded.completed_at,
+                updated_at=CURRENT_TIMESTAMP
+            """, (
+                data["run_id"],
+                data.get("created_at"),
+                data["expires_at"],
+                data["status"],
+                data["max_iterations"],
+                data.get("iterations_completed", 0),
+                data["chatgpt_conversation_url"],
+                data["chatgpt_conversation_id"],
+                data["codex_thread_id"],
+                data["codex_workspace"],
+                data["config_fingerprint"],
+                1 if data.get("canary_mode", True) else 0,
+                data.get("authorization_scope_version", "v1"),
+                1 if data.get("operator_confirmed") else 0,
+                1 if data.get("allow_cold_resume", True) else 0,
+                1 if data.get("experimental_queue_start_enabled") else 0,
+                data.get("stop_reason"),
+                data.get("error_details"),
+                data.get("started_at"),
+                data.get("completed_at"),
+            ))
+            await db.commit()
+            return await self.get_auto_run_authorization(data["run_id"])
+
+    async def get_auto_run_authorization(self, run_id: str) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM auto_run_authorizations WHERE run_id = ?", (run_id,))
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            item["canary_mode"] = bool(item.get("canary_mode"))
+            item["operator_confirmed"] = bool(item.get("operator_confirmed"))
+            item["allow_cold_resume"] = bool(item.get("allow_cold_resume"))
+            item["experimental_queue_start_enabled"] = bool(item.get("experimental_queue_start_enabled"))
+            return item
+
+    async def get_active_auto_run_authorization(self) -> Optional[Dict[str, Any]]:
+        active_statuses = (
+            "AUTO_ARMED",
+            "AUTO_RUNNING",
+            "AUTO_WAITING_CODEX",
+            "AUTO_WAITING_CHATGPT",
+            "AUTO_RESUMING_CODEX_THREAD",
+            "AUTO_HUMAN_ACTION_REQUIRED",
+            "AUTO_PAUSED",
+            "AUTO_PAUSED_RECOVERY_REQUIRED",
+        )
+        placeholders = ",".join("?" for _ in active_statuses)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                f"SELECT * FROM auto_run_authorizations WHERE status IN ({placeholders}) ORDER BY id DESC LIMIT 1",
+                active_statuses
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            item["canary_mode"] = bool(item.get("canary_mode"))
+            item["operator_confirmed"] = bool(item.get("operator_confirmed"))
+            item["allow_cold_resume"] = bool(item.get("allow_cold_resume"))
+            item["experimental_queue_start_enabled"] = bool(item.get("experimental_queue_start_enabled"))
+            return item
+
+    async def update_auto_run_status(
+        self,
+        run_id: str,
+        status: str,
+        stop_reason: Optional[str] = None,
+        error_details: Optional[str] = None,
+        iterations_completed: Optional[int] = None,
+        started_at: Optional[str] = None,
+        completed_at: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        existing = await self.get_auto_run_authorization(run_id)
+        if not existing:
+            return None
+        existing["status"] = status
+        if stop_reason is not None:
+            existing["stop_reason"] = stop_reason
+        if error_details is not None:
+            existing["error_details"] = error_details
+        if iterations_completed is not None:
+            existing["iterations_completed"] = iterations_completed
+        if started_at is not None:
+            existing["started_at"] = started_at
+        if completed_at is not None:
+            existing["completed_at"] = completed_at
+        return await self.save_auto_run_authorization(existing)
+
+    async def save_auto_run_iteration(self, iteration: Any) -> Dict[str, Any]:
+        data = iteration.model_dump(mode="json") if hasattr(iteration, "model_dump") else dict(iteration)
+        metrics_json = json.dumps(data["metrics"]) if data.get("metrics") else None
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+            INSERT INTO auto_run_iterations (
+                run_id, iteration_number, status, evidence_schema_version,
+                codex_source_turn_id, codex_source_message_id, codex_output_hash,
+                c2g_transfer_id, chatgpt_user_turn_id, chatgpt_user_message_id,
+                chatgpt_user_raw_hash, chatgpt_user_semantic_hash,
+                chatgpt_assistant_turn_id, chatgpt_assistant_message_id,
+                chatgpt_assistant_response_hash, planner_response_hash,
+                planner_classification, extracted_prompt_hash, g2c_transfer_id,
+                queue_receipt_id, queue_client_user_message_id, queued_item_id,
+                codex_target_turn_id, codex_user_message_id,
+                codex_assistant_message_id, codex_completed_at,
+                thread_resume_required, thread_resume_attempted, thread_resume_result,
+                started_at, completed_at, metrics, stop_reason, error_details
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, iteration_number) DO UPDATE SET
+                status=excluded.status,
+                evidence_schema_version=excluded.evidence_schema_version,
+                codex_source_turn_id=excluded.codex_source_turn_id,
+                codex_source_message_id=excluded.codex_source_message_id,
+                codex_output_hash=excluded.codex_output_hash,
+                c2g_transfer_id=excluded.c2g_transfer_id,
+                chatgpt_user_turn_id=excluded.chatgpt_user_turn_id,
+                chatgpt_user_message_id=excluded.chatgpt_user_message_id,
+                chatgpt_user_raw_hash=excluded.chatgpt_user_raw_hash,
+                chatgpt_user_semantic_hash=excluded.chatgpt_user_semantic_hash,
+                chatgpt_assistant_turn_id=excluded.chatgpt_assistant_turn_id,
+                chatgpt_assistant_message_id=excluded.chatgpt_assistant_message_id,
+                chatgpt_assistant_response_hash=excluded.chatgpt_assistant_response_hash,
+                planner_response_hash=excluded.planner_response_hash,
+                planner_classification=excluded.planner_classification,
+                extracted_prompt_hash=excluded.extracted_prompt_hash,
+                g2c_transfer_id=excluded.g2c_transfer_id,
+                queue_receipt_id=excluded.queue_receipt_id,
+                queue_client_user_message_id=excluded.queue_client_user_message_id,
+                queued_item_id=excluded.queued_item_id,
+                codex_target_turn_id=excluded.codex_target_turn_id,
+                codex_user_message_id=excluded.codex_user_message_id,
+                codex_assistant_message_id=excluded.codex_assistant_message_id,
+                codex_completed_at=excluded.codex_completed_at,
+                thread_resume_required=excluded.thread_resume_required,
+                thread_resume_attempted=excluded.thread_resume_attempted,
+                thread_resume_result=excluded.thread_resume_result,
+                completed_at=excluded.completed_at,
+                metrics=excluded.metrics,
+                stop_reason=excluded.stop_reason,
+                error_details=excluded.error_details
+            """, (
+                data["run_id"],
+                data["iteration_number"],
+                data["status"],
+                data.get("evidence_schema_version", 2),
+                data.get("codex_source_turn_id"),
+                data.get("codex_source_message_id"),
+                data.get("codex_output_hash"),
+                data.get("c2g_transfer_id"),
+                data.get("chatgpt_user_turn_id"),
+                data.get("chatgpt_user_message_id"),
+                data.get("chatgpt_user_raw_hash"),
+                data.get("chatgpt_user_semantic_hash"),
+                data.get("chatgpt_assistant_turn_id"),
+                data.get("chatgpt_assistant_message_id"),
+                data.get("chatgpt_assistant_response_hash"),
+                data.get("planner_response_hash"),
+                data.get("planner_classification"),
+                data.get("extracted_prompt_hash"),
+                data.get("g2c_transfer_id"),
+                data.get("queue_receipt_id"),
+                data.get("queue_client_user_message_id"),
+                data.get("queued_item_id"),
+                data.get("codex_target_turn_id"),
+                data.get("codex_user_message_id"),
+                data.get("codex_assistant_message_id"),
+                data.get("codex_completed_at"),
+                1 if data.get("thread_resume_required") else 0,
+                1 if data.get("thread_resume_attempted") else 0,
+                data.get("thread_resume_result"),
+                data.get("started_at"),
+                data.get("completed_at"),
+                metrics_json,
+                data.get("stop_reason"),
+                data.get("error_details"),
+            ))
+            await db.commit()
+            return await self.get_auto_run_iteration(data["run_id"], data["iteration_number"])
+
+    async def get_auto_run_iteration(self, run_id: str, iteration_number: int) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM auto_run_iterations WHERE run_id = ? AND iteration_number = ?",
+                (run_id, iteration_number)
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            if item.get("metrics") and isinstance(item["metrics"], str):
+                try:
+                    item["metrics"] = json.loads(item["metrics"])
+                except Exception:
+                    pass
+            item["thread_resume_required"] = bool(item.get("thread_resume_required"))
+            item["thread_resume_attempted"] = bool(item.get("thread_resume_attempted"))
+            return item
+
+    async def get_auto_run_iterations(self, run_id: str) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM auto_run_iterations WHERE run_id = ? ORDER BY iteration_number ASC",
+                (run_id,)
+            )
+            rows = await cursor.fetchall()
+            results = []
+            for r in rows:
+                item = dict(r)
+                if item.get("metrics") and isinstance(item["metrics"], str):
+                    try:
+                        item["metrics"] = json.loads(item["metrics"])
+                    except Exception:
+                        pass
+                item["thread_resume_required"] = bool(item.get("thread_resume_required"))
+                item["thread_resume_attempted"] = bool(item.get("thread_resume_attempted"))
+                results.append(item)
+            return results
+
+    async def save_child_transfer_authorization(self, child_auth: Any) -> Dict[str, Any]:
+        data = child_auth.model_dump(mode="json") if hasattr(child_auth, "model_dump") else dict(child_auth)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+            INSERT INTO child_transfer_authorizations (
+                child_auth_id, parent_run_id, iteration_number, transfer_id,
+                direction, destination_identifier, content_hash, config_fingerprint,
+                confirmation_token, consumed, consumed_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(child_auth_id) DO UPDATE SET
+                consumed=excluded.consumed,
+                consumed_at=excluded.consumed_at
+            """, (
+                data["child_auth_id"],
+                data["parent_run_id"],
+                data["iteration_number"],
+                data["transfer_id"],
+                data["direction"],
+                data["destination_identifier"],
+                data["content_hash"],
+                data["config_fingerprint"],
+                data["confirmation_token"],
+                1 if data.get("consumed") else 0,
+                data.get("consumed_at"),
+                data.get("created_at"),
+            ))
+            await db.commit()
+            return data
+
+    async def get_child_transfer_authorization(self, transfer_id: str) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM child_transfer_authorizations WHERE transfer_id = ?",
+                (transfer_id,)
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            item["consumed"] = bool(item.get("consumed"))
+            return item
+
+    async def get_child_transfer_authorizations_for_run(self, parent_run_id: str) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM child_transfer_authorizations WHERE parent_run_id = ? ORDER BY iteration_number ASC",
+                (parent_run_id,)
+            )
+            rows = await cursor.fetchall()
+            items = []
+            for row in rows:
+                item = dict(row)
+                item["consumed"] = bool(item.get("consumed"))
+                items.append(item)
+            return items
+
+    get_child_transfer_authorizations_by_parent = get_child_transfer_authorizations_for_run
+
+    async def record_codex_lifecycle_event(self, event: Any) -> Dict[str, Any]:
+        data = event.model_dump(mode="json") if hasattr(event, "model_dump") else dict(event)
+        details_json = json.dumps(data["details"]) if data.get("details") else None
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+            INSERT INTO codex_lifecycle_events (
+                event_id, run_id, iteration_number, thread_id, event_type,
+                pre_state, post_state, details, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                data["event_id"],
+                data.get("run_id"),
+                data.get("iteration_number"),
+                data["thread_id"],
+                data["event_type"],
+                data.get("pre_state"),
+                data.get("post_state"),
+                details_json,
+                data.get("created_at"),
+            ))
+            await db.commit()
+            return data
+
+    async def get_codex_lifecycle_events(
+        self,
+        thread_id: Optional[str] = None,
+        run_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        if thread_id and thread_id.startswith("auto-") and run_id is None:
+            run_id = thread_id
+            thread_id = None
+        query = "SELECT * FROM codex_lifecycle_events WHERE 1=1"
+        params = []
+        if thread_id:
+            query += " AND thread_id = ?"
+            params.append(thread_id)
+        if run_id:
+            query += " AND run_id = ?"
+            params.append(run_id)
+        query += " ORDER BY id ASC"
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+            results = []
+            for r in rows:
+                item = dict(r)
+                if item.get("details") and isinstance(item["details"], str):
+                    try:
+                        item["details"] = json.loads(item["details"])
+                    except Exception:
+                        pass
+                results.append(item)
+            return results

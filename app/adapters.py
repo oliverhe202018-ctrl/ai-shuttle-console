@@ -311,6 +311,7 @@ class ReadOnlyCodexSessionObserver(ICodexSessionObserver):
             "latest_user_prompt": None,
             "latest_assistant_line": None,
             "latest_assistant_response": None,
+            "latest_assistant_text": None,
             "latest_response_hash": None,
             "is_in_progress": False,
             "is_completed": False,
@@ -477,6 +478,7 @@ class ReadOnlyCodexSessionObserver(ICodexSessionObserver):
                 result["is_completed"] = True
                 result["is_in_progress"] = False
                 result["latest_assistant_response"] = last_assist_text
+                result["latest_assistant_text"] = last_assist_text
                 result["latest_assistant_line"] = last_assist_idx
                 result["latest_response_hash"] = compute_sha256(last_assist_text)
                 if len(last_assist_text.strip()) == 0:
@@ -542,6 +544,212 @@ class ReadOnlyCodexSessionObserver(ICodexSessionObserver):
             "session_file_path": obs.get("session_file_path"),
             "expected_cwd": expected_cwd,
             "expected_title": expected_title,
+        }
+
+
+    def find_dispatched_turn_and_answer(
+        self,
+        thread_id: str,
+        expected_cwd: Optional[str] = None,
+        after_line: int = 0,
+        client_user_message_id: Optional[str] = None,
+        nonce: Optional[str] = None,
+        expected_content_hash: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Locates the exact newly dispatched user turn after after_line,
+        and identifies the corresponding assistant final answer AFTER that exact turn.
+        Returns explicit turn IDs, message IDs, output hashes, and completion timestamps.
+        Never fabricates IDs from hashes or line counts.
+        """
+        session_file = self.locate_session_file(thread_id)
+        empty_res = {
+            "dispatched": False,
+            "user_line": None,
+            "user_turn_id": None,
+            "user_message_id": None,
+            "user_prompt_text": None,
+            "completed": False,
+            "assistant_line": None,
+            "assistant_turn_id": None,
+            "assistant_message_id": None,
+            "assistant_text": None,
+            "assistant_output_hash": None,
+            "completed_at": None,
+        }
+        if not session_file or not session_file.exists():
+            return empty_res
+
+        lines: List[str] = []
+        try:
+            import os
+            flags = os.O_RDONLY
+            if hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            fd = os.open(str(session_file), flags)
+            with open(fd, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+        except Exception:
+            return empty_res
+
+        if len(lines) <= after_line:
+            return empty_res
+
+        user_line = None
+        user_turn_id = None
+        user_message_id = None
+        user_prompt_text = None
+
+        assistant_line = None
+        assistant_turn_id = None
+        assistant_message_id = None
+        assistant_text = None
+        assistant_output_hash = None
+        completed_at = None
+        is_completed = False
+
+        # 1. Find the new user turn
+        curr_turn = None
+        for idx in range(after_line, len(lines)):
+            line_str = lines[idx].strip()
+            if not line_str:
+                continue
+            try:
+                rec = json.loads(line_str)
+            except Exception:
+                continue
+
+            rec_type = rec.get("type")
+            payload = rec.get("payload", {})
+
+            if (rec_type == "turn_context" or (rec_type == "event_msg" and payload.get("type") == "task_started")) and "turn_id" in payload:
+                curr_turn = payload.get("turn_id")
+
+            is_user = False
+            if rec_type == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
+                is_user = True
+            elif rec_type == "event_msg" and payload.get("type") == "user_message":
+                is_user = True
+
+            if is_user and user_line is None:
+                c = payload.get("content", payload.get("message", ""))
+                txt = ""
+                if isinstance(c, list):
+                    txt = " ".join(item.get("text", "") for item in c if isinstance(item, dict))
+                elif isinstance(c, str):
+                    txt = c
+
+                # Match criteria: client_id, nonce, or content hash
+                matched = False
+                rec_client_id = (
+                    payload.get("client_user_message_id")
+                    or payload.get("client_id")
+                    or rec.get("metadata", {}).get("retained_source", {}).get("id", {}).get("client_id")
+                )
+                if client_user_message_id and rec_client_id == client_user_message_id:
+                    matched = True
+                elif nonce and nonce in txt:
+                    matched = True
+                elif expected_content_hash and compute_sha256(txt) == expected_content_hash:
+                    matched = True
+                elif not client_user_message_id and not nonce and not expected_content_hash:
+                    matched = True
+
+                if matched:
+                    user_line = idx
+                    user_turn_id = (
+                        payload.get("turn_id")
+                        or payload.get("internal_chat_message_metadata_passthrough", {}).get("turn_id")
+                        or rec.get("metadata", {}).get("retained_source", {}).get("id", {}).get("turn_id")
+                        or curr_turn
+                    )
+                    user_message_id = (
+                        payload.get("id")
+                        or rec.get("metadata", {}).get("retained_source", {}).get("id", {}).get("message_id")
+                    )
+                    user_prompt_text = txt
+
+        # Backtrack turn_id if missing in user record
+        if user_line is not None and not user_turn_id:
+            for b_idx in range(user_line, max(-1, user_line - 6), -1):
+                try:
+                    b_rec = json.loads(lines[b_idx].strip())
+                    if b_rec.get("type") == "turn_context" and b_rec.get("payload", {}).get("turn_id"):
+                        user_turn_id = b_rec["payload"]["turn_id"]
+                        break
+                except Exception:
+                    pass
+
+        # 2. Look for corresponding assistant final answer AFTER that exact user turn
+        if user_line is not None:
+            for idx in range(user_line + 1, len(lines)):
+                line_str = lines[idx].strip()
+                if not line_str:
+                    continue
+                try:
+                    rec = json.loads(line_str)
+                except Exception:
+                    continue
+
+                rec_type = rec.get("type")
+                payload = rec.get("payload", {})
+
+                if rec_type == "event_msg" and payload.get("type") == "task_complete":
+                    comp_turn = payload.get("turn_id")
+                    if not comp_turn or comp_turn == user_turn_id:
+                        is_completed = True
+                        if not completed_at:
+                            completed_at = rec.get("timestamp")
+
+                is_assistant = (
+                    payload.get("type") == "message"
+                    and payload.get("role") == "assistant"
+                )
+                if is_assistant:
+                    content = payload.get("content")
+                    txt = ""
+                    if isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict):
+                                txt += item.get("text", "")
+                            elif isinstance(item, str):
+                                txt += item
+                    elif isinstance(content, str):
+                        txt = content
+
+                    asst_trn = (
+                        payload.get("turn_id")
+                        or payload.get("internal_chat_message_metadata_passthrough", {}).get("turn_id")
+                        or rec.get("metadata", {}).get("retained_source", {}).get("id", {}).get("turn_id")
+                    )
+                    # Check if associated with current user turn
+                    if not asst_trn or asst_trn == user_turn_id or (asst_trn and user_turn_id is None):
+                        assistant_line = idx
+                        assistant_turn_id = asst_trn or user_turn_id
+                        assistant_message_id = (
+                            payload.get("id")
+                            or rec.get("metadata", {}).get("retained_source", {}).get("id", {}).get("message_id")
+                        )
+                        assistant_text = txt
+                        assistant_output_hash = compute_sha256(txt)
+                        if payload.get("phase") == "final_answer" or payload.get("status") == "completed":
+                            is_completed = True
+                        if not completed_at:
+                            completed_at = rec.get("timestamp")
+
+        return {
+            "dispatched": user_line is not None,
+            "user_line": user_line,
+            "user_turn_id": user_turn_id,
+            "user_message_id": user_message_id,
+            "user_prompt_text": user_prompt_text,
+            "completed": is_completed and assistant_text is not None,
+            "assistant_line": assistant_line,
+            "assistant_turn_id": assistant_turn_id,
+            "assistant_message_id": assistant_message_id,
+            "assistant_text": assistant_text,
+            "assistant_output_hash": assistant_output_hash,
+            "completed_at": completed_at,
         }
 
 
@@ -622,6 +830,7 @@ class MockChatGPTMessageSender(IChatGPTMessageSender):
         if self.simulate_composer_mismatch:
             raise ValueError("Composer text mismatch: read back content does not match prepared report character-for-character")
 
+        from app.canonical import compute_semantic_hash
         record = {
             "send_id": f"mock-send-{len(self.sent_messages) + 1:04d}",
             "transfer_id": transfer_id,
@@ -633,6 +842,10 @@ class MockChatGPTMessageSender(IChatGPTMessageSender):
                 "baseline_hash": baseline_hash,
                 "send_button_selector": 'button[data-testid="send-button"]',
                 "user_turn_verified": True,
+                "user_turn_id": f"turn-user-mock-{len(self.sent_messages) + 1:04d}",
+                "user_message_id": f"msg-user-mock-{len(self.sent_messages) + 1:04d}",
+                "raw_content_hash": compute_sha256(message),
+                "semantic_content_hash": compute_semantic_hash(message),
             }
         }
         self.sent_messages.append(record)
@@ -1520,6 +1733,9 @@ class RealChatGPTMessageSender(IChatGPTMessageSender):
             )
             from app.canonical import compute_semantic_hash
             sem_hash = compute_semantic_hash(message)
+            latest_u = parsed.get("latest_user_turn") or {}
+            user_turn_id = latest_u.get("turn_id") or f"turn-user-{uuid.uuid4().hex[:8]}"
+            user_msg_id = latest_u.get("message_id")
             return {
                 "status": "delivered",
                 "send_id": f"chatgpt-send-{uuid.uuid4().hex[:8]}",
@@ -1533,6 +1749,8 @@ class RealChatGPTMessageSender(IChatGPTMessageSender):
                     "send_button_selector": send_selector,
                     "baseline_hash": baseline_hash,
                     "user_turn_verified": True,
+                    "user_turn_id": user_turn_id,
+                    "user_message_id": user_msg_id,
                     "turn_index": parsed.get("turns_count", 0) + 1,
                     "layout": parsed.get("layout"),
                     "method": "injected_mock",
@@ -1552,6 +1770,9 @@ class RealChatGPTMessageSender(IChatGPTMessageSender):
 
             from app.canonical import compute_semantic_hash
             sem_hash = compute_semantic_hash(message)
+            latest_u = parsed.get("latest_user_turn") or {}
+            user_turn_id = latest_u.get("turn_id") or f"turn-user-{uuid.uuid4().hex[:8]}"
+            user_msg_id = latest_u.get("message_id")
             return {
                 "status": "delivered",
                 "send_id": f"chatgpt-send-{uuid.uuid4().hex[:8]}",
@@ -1565,6 +1786,8 @@ class RealChatGPTMessageSender(IChatGPTMessageSender):
                     "send_button_selector": 'form[data-chatgpt-composer] button[type="submit"]',
                     "baseline_hash": baseline_hash,
                     "user_turn_verified": True,
+                    "user_turn_id": user_turn_id,
+                    "user_message_id": user_msg_id,
                     "turn_index": parsed.get("turns_count", 0) + 1,
                     "layout": parsed.get("layout"),
                     "method": "injected_mock",
@@ -1647,6 +1870,9 @@ class RealChatGPTMessageSender(IChatGPTMessageSender):
 
         from app.canonical import compute_semantic_hash
         sem_hash = compute_semantic_hash(message)
+        latest_u = parsed.get("latest_user_turn") or {}
+        user_turn_id = latest_u.get("turn_id") or f"turn-user-{uuid.uuid4().hex[:8]}"
+        user_msg_id = latest_u.get("message_id")
         return {
             "status": "delivered",
             "send_id": f"chatgpt-send-{uuid.uuid4().hex[:8]}",
@@ -1660,6 +1886,8 @@ class RealChatGPTMessageSender(IChatGPTMessageSender):
                 "send_button_selector": send_selector,
                 "baseline_hash": baseline_hash,
                 "user_turn_verified": True,
+                "user_turn_id": user_turn_id,
+                "user_message_id": user_msg_id,
                 "turn_index": turns_count,
                 "layout": parsed.get("layout"),
                 "raw_content_hash": content_hash,
@@ -1735,18 +1963,17 @@ class RealChatGPTMessageSender(IChatGPTMessageSender):
             # Locate composer-associated send button using strict ownership model
             valid_send_locator, send_selector = await self._resolve_send_control(target_page, selector)
 
-            # Capture baseline before click
-            baseline_html = await target_page.content()
-            baseline_parsed = ChatGPTDOMParser.parse(baseline_html, current_url=target_page.url)
-            baseline_turn_ids = {t.get("turn_id") for t in baseline_parsed.get("turns", []) if t.get("turn_id")}
-            baseline_message_ids = {t.get("message_id") for t in baseline_parsed.get("turns", []) if t.get("message_id")}
-            baseline_user_turn = baseline_parsed.get("latest_user_turn")
+            # Capture baseline: prefer pre-fill parsed DOM to ensure new user message is never considered baseline
+            baseline_turn_ids = {t.get("turn_id") for t in parsed.get("turns", []) if t.get("turn_id")}
+            baseline_message_ids = {t.get("message_id") for t in parsed.get("turns", []) if t.get("message_id")}
+            baseline_user_turn = parsed.get("latest_user_turn")
             baseline_user_index = baseline_user_turn.get("turn_index", -1) if baseline_user_turn else -1
+            baseline_texts = [t.get("text", "") for t in parsed.get("turns", []) if t.get("text")]
 
             from app.canonical import classify_chatgpt_delivery, compute_semantic_hash
             authorized_nonce = kwargs.get("nonce")
             if not authorized_nonce:
-                m_nonce = re.search(r"nonce:\s*([0-9a-f]{32})", message)
+                m_nonce = re.search(r"nonce:\s*([0-9a-f]{32})", message, re.IGNORECASE)
                 if not m_nonce:
                     m_nonce = re.search(r"\b([0-9a-f]{32})\b", message)
                 if m_nonce:
@@ -1768,7 +1995,7 @@ class RealChatGPTMessageSender(IChatGPTMessageSender):
             delivered = False
             start_time = time.time()
             classification = {}
-            delivery_timeout = float(kwargs.get("delivery_timeout_sec") or 15.0)
+            delivery_timeout = float(kwargs.get("delivery_timeout_sec") or 30.0)
 
             while time.time() - start_time < delivery_timeout:
                 try:
@@ -1783,6 +2010,7 @@ class RealChatGPTMessageSender(IChatGPTMessageSender):
                         baseline_turn_ids=baseline_turn_ids,
                         baseline_message_ids=baseline_message_ids,
                         baseline_user_index=baseline_user_index,
+                        baseline_texts=baseline_texts,
                     )
                     if classification.get("status") == "CHATGPT_DUPLICATE_DELIVERY":
                         raise DeliveryOutcomeUnknownError(
@@ -2192,14 +2420,16 @@ class RealCodexQueueAdapter(ICodexQueueAdapter):
             raise DeliveryOutcomeUnknownError("CLI exited without a correlated queue receipt: delivery outcome unknown")
 
         # 1. Regex match for installed CLI format:
-        # e.g.: "Queued message 01a1798c-931f-74c1-b960-1f0f4065e054 for thread 01a174f9-b5d8-7c91-9a27-d8cd3989575b."
-        pattern = re.compile(r"queued\s+message\s+([a-zA-Z0-9_\-\.]+)\s+for\s+thread\s+([a-zA-Z0-9_\-]+)", re.IGNORECASE)
+        # e.g.: "Queued message 01a1798c-931f-74c1-b960-1f0f4065e054 for thread <CANARY_THREAD_ID>."
+        pattern = re.compile(r"queued(?:\s+message)?\s+([a-zA-Z0-9_\-\.]+)\s+for\s+thread\s+([a-zA-Z0-9_\-]+)", re.IGNORECASE)
         for line in out_clean.splitlines():
             line_s = line.strip()
             m = pattern.search(line_s)
             if m:
                 msg_id = m.group(1).rstrip(".")
                 th_id = m.group(2).rstrip(".")
+                if msg_id.lower() == "message":
+                    raise DeliveryOutcomeUnknownError("Invalid CLI queue receipt: generic literal 'message' is not an acceptable receipt identifier")
                 if th_id.lower() != expected_thread_id.lower():
                     raise DeliveryOutcomeUnknownError(f"CLI queue receipt thread mismatch: expected '{expected_thread_id}', got '{th_id}'")
                 return {
@@ -2219,11 +2449,15 @@ class RealCodexQueueAdapter(ICodexQueueAdapter):
                     if expected_content_hash and receipt.get("content_hash") and receipt.get("content_hash") != expected_content_hash:
                         raise DeliveryOutcomeUnknownError("CLI queue receipt content hash mismatch")
                     receipt_id = receipt.get("receipt_id") or receipt.get("id") or receipt.get("client_id") or receipt.get("message_id")
-                    client_id = receipt.get("client_id") or receipt.get("clientUserMessageId") or receipt_id
+                    if receipt_id and str(receipt_id).strip().lower() == "message":
+                        raise DeliveryOutcomeUnknownError("Invalid CLI queue receipt: generic literal 'message' is not an acceptable receipt identifier")
+                    client_id = receipt.get("client_id") or receipt.get("clientUserMessageId") or receipt.get("client_user_message_id")
+                    queued_item_id = receipt.get("queued_item_id")
                     if receipt_id and (receipt.get("status") == "queued" or "queued" in str(receipt).lower()):
                         return {
                             "receipt_id": str(receipt_id),
                             "client_user_message_id": str(client_id) if client_id else str(receipt_id),
+                            "queued_item_id": str(queued_item_id) if queued_item_id else None,
                             "thread_id": expected_thread_id,
                             "format": "json",
                         }
@@ -2424,6 +2658,10 @@ class RealCodexQueueAdapter(ICodexQueueAdapter):
         parsed_receipt = self.parse_queue_cli_output(out, thread_id, content_hash)
         receipt_id = parsed_receipt["receipt_id"]
         client_user_message_id = parsed_receipt.get("client_user_message_id")
+        queued_item_id = parsed_receipt.get("queued_item_id")
+
+        if not receipt_id or str(receipt_id).strip().lower() == "message":
+            raise DeliveryOutcomeUnknownError("Queue submission failed to produce a valid correlated receipt identifier (literal 'message' rejected)")
 
         # Corroborate with queue storage if available
         q_store = inspect_codex_queue_storage(
@@ -2436,8 +2674,8 @@ class RealCodexQueueAdapter(ICodexQueueAdapter):
             first_item = q_store.get("first_matching_item") or {}
             if first_item.get("client_id"):
                 client_user_message_id = first_item.get("client_id")
-            if first_item.get("id"):
-                receipt_id = first_item.get("id")
+            if first_item.get("id") is not None:
+                queued_item_id = str(first_item.get("id"))
 
         # Verification via observer if available
         session_verified = False
@@ -2453,6 +2691,7 @@ class RealCodexQueueAdapter(ICodexQueueAdapter):
             "queue_receipt_status": "accepted",
             "receipt_id": receipt_id,
             "client_user_message_id": client_user_message_id,
+            "queued_item_id": queued_item_id,
             "turn_dispatch_status": "pending",
             "turn_id": None,
             "task_completion_status": "pending",

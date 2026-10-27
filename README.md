@@ -27,6 +27,24 @@ A local web application for configuring, monitoring, and safely orchestrating me
 
 ---
 
+## Controlled Auto Mode (Phase 2.6)
+
+The Local AI Shuttle Control Center includes a **bounded controlled auto mode** that automates multi-round prompt and output shuttle between ChatGPT and Codex under strict operator governance.
+
+> **Important**: This is NOT "fully autonomous unrestricted AI". The Shuttle Console acts purely as an authenticated, fail-closed courier between the human-directed ChatGPT project conversation (the sole planner) and the local Codex execution thread.
+
+### How It Works (In Plain Language)
+
+1. **Choose Maximum Iterations**: The operator sets an explicit iteration ceiling (1 to 10 rounds, default 3). The auto loop strictly terminates once this limit is reached.
+2. **Verify Exact Targets**: The system verifies that the target Codex thread, canonical workspace directory, and ChatGPT conversation URL exactly match the authorized configuration and never touch protected repositories.
+3. **Authorize Once**: The operator grants a single explicit run authorization bound to the configuration fingerprint and a 60-minute TTL.
+4. **Shuttle Transports Automatically**: The console automatically transports verified Codex output to ChatGPT (C2G), captures the assistant response, extracts the classified prompt, and submits it to the Codex queue (G2C).
+5. **Official Cold Thread Resume**: If the target Codex thread is cold or unloaded (`notLoaded`), the console activates it via the official `codex app-server` lifecycle API (`thread/resume`), ensuring the queued task dispatches immediately without manual GUI interaction or duplicate resubmissions.
+6. **Any Ambiguity Stops the Run**: If ChatGPT emits `SHUTTLE_STOP`, provides no actionable prompt, produces multiple ambiguous candidate blocks, or if Codex requests human approval for tool actions, the auto loop stops immediately and awaits operator intervention.
+7. **Operator Pause & Emergency Stop**: The operator retains full control at all times via UI buttons and API endpoints (`/api/auto/pause`, `/api/auto/resume`, `/api/auto/emergency-stop`) to pause after the current round or instantly halt execution.
+
+---
+
 ## Windows Setup & Launch Instructions
 
 ### 1. Requirements

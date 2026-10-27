@@ -32,7 +32,16 @@ from app.adapters import (
     StandardPromptExtractor,
 )
 from app.database import Database
+from app.codex_app_server import CodexAppServerManager
+from app.auto_mode import AutoModeCoordinator
 from app.models import (
+    AutoAuthorizeRequest,
+    AutoPauseRequest,
+    AutoEmergencyStopRequest,
+    AutoResumeHumanRequest,
+    CodexResumeRequest,
+    AutoRunState,
+
     AppConfig,
     CodexConfig,
     ChatGPTConfig,
@@ -83,6 +92,35 @@ runtime_browser_status = {}
 runtime_codex_status = {}
 runtime_lock = asyncio.Lock()
 transfer_lock = asyncio.Lock()
+
+app_server_manager: Optional[CodexAppServerManager] = None
+auto_coordinator: Optional[AutoModeCoordinator] = None
+
+
+def get_app_server_manager() -> CodexAppServerManager:
+    global app_server_manager
+    if app_server_manager is None:
+        cli_p = "codex"
+        if state_machine and state_machine.config and state_machine.config.codex and state_machine.config.codex.cli_path:
+            cli_p = state_machine.config.codex.cli_path
+        app_server_manager = CodexAppServerManager(cli_p)
+    return app_server_manager
+
+
+def get_auto_coordinator() -> AutoModeCoordinator:
+    global auto_coordinator, app_server_manager
+    if auto_coordinator is None:
+        mgr = get_app_server_manager()
+        auto_coordinator = AutoModeCoordinator(
+            db=db,
+            app_server_manager=mgr,
+            chatgpt_sender=real_chatgpt_sender or chatgpt_sender,
+            codex_queue=real_codex_queue or codex_queue,
+            get_config_fn=db.get_config,
+            observer_fn=lambda: codex_observer,
+        )
+    return auto_coordinator
+
 
 
 def serialize_transfer(function):
@@ -137,7 +175,7 @@ async def current_canary_request():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global db, state_machine, runtime_identity
+    global db, state_machine, runtime_identity, app_server_manager, auto_coordinator, codex_observer, real_chatgpt_observer, real_chatgpt_sender, real_codex_queue
     explicit_path = os.environ.get("SHUTTLE_CONFIG")
     require_canary = os.environ.get("SHUTTLE_CANARY") == "1"
     if require_canary and not explicit_path:
@@ -150,6 +188,19 @@ async def lifespan(app: FastAPI):
         state_machine = ShuttleStateMachine(db)
     await db.init()
     config = explicit_config or await db.get_config()
+    cli_p = "codex"
+    if explicit_config and explicit_config.codex and explicit_config.codex.cli_path:
+        cli_p = explicit_config.codex.cli_path
+    app_server_manager = CodexAppServerManager(cli_p)
+    auto_coordinator = AutoModeCoordinator(
+        db=db,
+        app_server_manager=app_server_manager,
+        chatgpt_sender=real_chatgpt_sender or chatgpt_sender,
+        codex_queue=real_codex_queue or codex_queue,
+        get_config_fn=db.get_config,
+        observer_fn=lambda: codex_observer,
+    )
+    await auto_coordinator.check_restart_recovery()
     if explicit_config:
         saved = await db.get_config()
         if saved and saved != explicit_config:
@@ -193,7 +244,6 @@ async def lifespan(app: FastAPI):
             await state_machine.transition_to(ShuttleStage.DELIVERY_OUTCOME_UNKNOWN,
                 transfer_status="unknown", failure_details="Interrupted canary submission", force=True)
 
-    global codex_observer, real_chatgpt_observer, real_chatgpt_sender, real_codex_queue
     if config:
         if config.codex.sessions_dir:
             codex_observer = ReadOnlyCodexSessionObserver(
@@ -222,11 +272,16 @@ async def lifespan(app: FastAPI):
             observer=codex_observer,
             verified_thread_id=config.codex.thread_id if config.canary_mode else None,
         )
+        if auto_coordinator:
+            auto_coordinator.chatgpt_sender = real_chatgpt_sender
+            auto_coordinator.codex_queue = real_codex_queue
 
     if config and config.canary_mode:
         await transfer_snapshot(config, repair=True)
     yield
     # Shutdown logic if any
+    if app_server_manager:
+        await app_server_manager.shutdown()
 
 
 app = FastAPI(title="Local AI Shuttle Control Center", lifespan=lifespan)
@@ -2331,3 +2386,140 @@ async def update_canary_round_endpoint(req: UpdateCanaryRoundRequest):
     if not updated:
         raise HTTPException(status_code=404, detail=f"Round '{round_id}' not found")
     return updated
+
+# ----------------------------------------------------
+# Phase 2.6 Endpoints: Codex Lifecycle & Controlled Auto Mode
+# ----------------------------------------------------
+
+@app.get("/api/codex/capabilities")
+async def get_codex_capabilities():
+    mgr = get_app_server_manager()
+    try:
+        caps = await mgr.get_capabilities()
+        return caps
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/codex/thread/status")
+async def get_codex_thread_status(thread_id: str):
+    if not thread_id:
+        raise HTTPException(status_code=400, detail="thread_id is required")
+    mgr = get_app_server_manager()
+    try:
+        is_cold, status_type = await mgr.is_thread_cold(thread_id)
+        return {
+            "thread_id": thread_id,
+            "is_cold": is_cold,
+            "status_type": status_type
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/codex/thread/resume")
+async def resume_codex_thread(req: CodexResumeRequest):
+    if not req.thread_id:
+        raise HTTPException(status_code=400, detail="thread_id is required")
+    mgr = get_app_server_manager()
+    cfg = await db.get_config()
+    exp_ws = req.expected_workspace or (cfg.codex.repo_path if cfg and cfg.codex else None)
+    try:
+        result = await mgr.resume_thread_safely(req.thread_id, expected_workspace=exp_ws)
+        return {
+            "status": "resumed",
+            "thread_id": req.thread_id,
+            "result": result
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/auto/authorize")
+async def auto_authorize(req: AutoAuthorizeRequest):
+    coord = get_auto_coordinator()
+    try:
+        saved = await coord.arm_run(
+            max_iterations=req.max_iterations,
+            operator_confirmed=req.operator_confirmed,
+            allow_cold_resume=req.allow_cold_resume,
+            ttl_minutes=req.ttl_minutes,
+            experimental_queue_start_enabled=req.experimental_queue_start_enabled,
+        )
+        return saved
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/auto/start")
+async def auto_start(run_id: str):
+    coord = get_auto_coordinator()
+    try:
+        await coord.start_run(run_id)
+        return {"status": "started", "run_id": run_id}
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/auto/status")
+async def auto_status():
+    coord = get_auto_coordinator()
+    auth = await db.get_active_auto_run_authorization()
+    iterations = []
+    if auth:
+        iterations = await db.get_auto_run_iterations(auth["run_id"])
+    return {
+        "active_run": auth,
+        "iterations": iterations,
+        "is_running": coord.is_running,
+    }
+
+
+@app.post("/api/auto/pause")
+async def auto_pause(req: AutoPauseRequest):
+    coord = get_auto_coordinator()
+    try:
+        await coord.request_pause(req.run_id, req.reason or "Operator requested pause")
+        return {"status": "pause_requested", "run_id": req.run_id}
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/auto/emergency_stop")
+async def auto_emergency_stop(req: AutoEmergencyStopRequest):
+    coord = get_auto_coordinator()
+    try:
+        await coord.emergency_stop(req.run_id, req.reason or "Operator emergency stop")
+        return {"status": "stopped", "run_id": req.run_id}
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/auto/abort")
+async def auto_abort(run_id: str, reason: str = "Operator aborted"):
+    coord = get_auto_coordinator()
+    try:
+        await coord.abort_run(run_id, reason)
+        return {"status": "aborted", "run_id": run_id}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/auto/resume_human")
+async def auto_resume_human(req: AutoResumeHumanRequest):
+    coord = get_auto_coordinator()
+    try:
+        await coord.resume_after_human_action(req.run_id)
+        return {"status": "resumed", "run_id": req.run_id}
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))

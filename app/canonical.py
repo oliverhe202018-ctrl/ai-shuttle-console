@@ -351,6 +351,7 @@ def classify_chatgpt_delivery(
     baseline_turn_ids: Optional[Any] = None,
     baseline_message_ids: Optional[Any] = None,
     baseline_user_index: Optional[int] = None,
+    baseline_texts: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Classifies ChatGPT delivery confirmation by checking:
@@ -391,7 +392,7 @@ def classify_chatgpt_delivery(
     # 3. Extract nonce if not provided
     nonce_to_check = authorized_nonce
     if not nonce_to_check:
-        m_nonce = re.search(r"nonce:\s*([0-9a-f]{32})", expected_message)
+        m_nonce = re.search(r"nonce:\s*([0-9a-f]{32})", expected_message, re.IGNORECASE)
         if not m_nonce:
             m_nonce = re.search(r"\b([0-9a-f]{32})\b", expected_message)
         if m_nonce:
@@ -418,6 +419,10 @@ def classify_chatgpt_delivery(
         m_id = t.get("message_id")
         t_idx = t.get("turn_index", -1)
 
+        # Nonce check
+        turn_text = t.get("text") or ""
+        has_nonce = bool(not nonce_to_check or (nonce_to_check in turn_text))
+
         # Baseline check
         is_stale = False
         if t_id and t_id in b_turn_ids:
@@ -425,11 +430,13 @@ def classify_chatgpt_delivery(
         if m_id and m_id in b_msg_ids:
             is_stale = True
         if b_user_idx != -1 and t_idx != -1 and t_idx <= b_user_idx:
-            is_stale = True
-
-        # Nonce check
-        turn_text = t.get("text") or ""
-        has_nonce = bool(not nonce_to_check or (nonce_to_check in turn_text))
+            # Positional index check: only treat as stale if not possessing a new unique authorized nonce
+            if nonce_to_check and (nonce_to_check in turn_text):
+                b_texts = set(baseline_texts) if baseline_texts else set()
+                if any(nonce_to_check in (bt or "") for bt in b_texts):
+                    is_stale = True
+            else:
+                is_stale = True
 
         # Semantic check
         turn_sem_hash = t.get("semantic_content_hash")

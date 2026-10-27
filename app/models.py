@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 import hashlib
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ShuttleStage(str, Enum):
@@ -471,28 +471,89 @@ class AutoRunIteration(BaseModel):
     run_id: str
     iteration_number: int
     status: str = "running"
+    evidence_schema_version: int = 2
+
+    # Codex source
     codex_source_turn_id: Optional[str] = None
     codex_source_message_id: Optional[str] = None
     codex_output_hash: Optional[str] = None
+
+    # C2G
     c2g_transfer_id: Optional[str] = None
+
+    # ChatGPT User Turn & Message identity
     chatgpt_user_turn_id: Optional[str] = None
+    chatgpt_user_message_id: Optional[str] = None
+    chatgpt_user_raw_hash: Optional[str] = None
+    chatgpt_user_semantic_hash: Optional[str] = None
+
+    # ChatGPT Assistant Turn & Message identity
     chatgpt_assistant_turn_id: Optional[str] = None
+    chatgpt_assistant_message_id: Optional[str] = None
+    chatgpt_assistant_response_hash: Optional[str] = None
+
+    # Planner classification
     planner_response_hash: Optional[str] = None
     planner_classification: Optional[str] = None
     extracted_prompt_hash: Optional[str] = None
+
+    # G2C
     g2c_transfer_id: Optional[str] = None
+
+    # G2C Queue Identity
     queue_receipt_id: Optional[str] = None
+    queue_client_user_message_id: Optional[str] = None
     queued_item_id: Optional[str] = None
+
+    # Codex Dispatch & Target Turn Identity
     codex_target_turn_id: Optional[str] = None
+    codex_user_message_id: Optional[str] = None
     codex_assistant_message_id: Optional[str] = None
+    codex_completed_at: Optional[datetime] = None
+
+    # Thread resume
     thread_resume_required: bool = False
     thread_resume_attempted: bool = False
     thread_resume_result: Optional[str] = None
+
+    # Timing & Status
     started_at: datetime = Field(default_factory=datetime.utcnow)
     completed_at: Optional[datetime] = None
     metrics: Optional[Dict[str, Any]] = None
     stop_reason: Optional[str] = None
     error_details: Optional[str] = None
+
+    @field_validator("chatgpt_user_turn_id")
+    @classmethod
+    def validate_chatgpt_user_turn_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            if v.startswith("c2g-") or v.startswith("g2c-") or v.startswith("transfer-"):
+                raise ValueError("chatgpt_user_turn_id must contain a real observed turn ID, not a transfer ID")
+        return v
+
+    @field_validator("queue_receipt_id")
+    @classmethod
+    def validate_queue_receipt_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            if v.strip().lower() == "message":
+                raise ValueError("queue_receipt_id cannot be the generic literal 'message'")
+        return v
+
+    @model_validator(mode="after")
+    def validate_cross_field_integrity(self) -> "AutoRunIteration":
+        if self.queued_item_id is not None and self.queue_client_user_message_id is not None:
+            if self.queued_item_id == self.queue_client_user_message_id:
+                raise ValueError("queued_item_id cannot duplicate queue_client_user_message_id")
+        if self.codex_target_turn_id is not None and self.queue_client_user_message_id is not None:
+            if self.codex_target_turn_id == self.queue_client_user_message_id:
+                raise ValueError("codex_target_turn_id cannot duplicate queue_client_user_message_id")
+        if self.codex_assistant_message_id is not None and self.codex_output_hash is not None:
+            if (
+                self.codex_assistant_message_id == self.codex_output_hash[:16]
+                or self.codex_assistant_message_id == self.codex_output_hash
+            ):
+                raise ValueError("codex_assistant_message_id cannot be populated from a content hash or hash prefix")
+        return self
 
 
 class ChildTransferAuthorization(BaseModel):

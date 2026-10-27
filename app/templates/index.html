@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -42,6 +42,7 @@
     .btn-secondary { background: #334155; color: #fff; }
     .btn-secondary:hover { background: #475569; }
     .btn-danger { background: var(--danger); color: #fff; }
+    .btn:disabled, .btn:disabled:hover { background: #334155; color: #94a3b8; opacity: 0.55; cursor: not-allowed; }
     .btn-group { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 
     pre { background: #0b1120; border: 1px solid var(--border); padding: 10px; border-radius: 4px; font-size: 12px; color: #a5f3fc; overflow-x: auto; max-height: 200px; }
@@ -63,7 +64,76 @@
     </div>
   </header>
 
-  <div class="grid">
+    <div class="grid">
+
+    <div class="card" style="grid-column: 1 / -1; border-color: var(--accent);">
+      <strong id="runtime-readiness" role="status">Checking live transfer readiness...</strong>
+      <div id="runtime-blocker"></div>
+    </div>
+
+    <!-- Phase 2.4.2 — Canary Setup / Preflight Panel -->
+    <div class="card" id="canary-bootstrap-panel" style="grid-column: 1 / -1; border-color: var(--accent);">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 14px;">
+        <h2 style="margin-bottom: 0; border-bottom: none;">Phase 2.4.2 — Canary Setup / Preflight</h2>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span id="canary-verdict-badge" class="badge badge-idle">INITIALIZING...</span>
+          <button class="btn btn-secondary" onclick="recheckCanaryBootstrap()">Read-Only Recheck</button>
+        </div>
+      </div>
+
+      <!-- Human Action Alert -->
+      <div id="canary-human-action-box" style="display: none; background: #3b1115; border: 1px solid #ef4444; border-radius: 6px; padding: 14px; margin-bottom: 16px;">
+        <div style="font-weight: 700; color: #fca5a5; margin-bottom: 6px;" id="canary-human-action-title">Human Action Required</div>
+        <div style="color: #fecaca; white-space: pre-wrap; font-size: 13px;" id="canary-human-action-desc"></div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px;">
+        <!-- Codex Canary -->
+        <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+          <h3 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">Codex Canary</h3>
+          <div style="font-size: 12px; line-height: 1.8;">
+            <div><strong style="color: var(--text-muted);">Workspace:</strong> <span id="canary-codex-workspace">-</span></div>
+            <div><strong style="color: var(--text-muted);">Thread ID:</strong> <span id="canary-codex-thread">-</span></div>
+            <div><strong style="color: var(--text-muted);">Title:</strong> <span id="canary-codex-title">-</span></div>
+            <div><strong style="color: var(--text-muted);">Session File:</strong> <span id="canary-codex-file" style="word-break: break-all;">-</span></div>
+            <div><strong style="color: var(--text-muted);">Identity Status:</strong> <span id="canary-codex-status">-</span></div>
+          </div>
+        </div>
+
+        <!-- ChatGPT Canary -->
+        <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+          <h3 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">ChatGPT Canary</h3>
+          <div style="font-size: 12px; line-height: 1.8;">
+            <div><strong style="color: var(--text-muted);">Browser Profile:</strong> <span id="canary-chatgpt-profile" style="word-break: break-all;">-</span></div>
+            <div><strong style="color: var(--text-muted);">CDP Endpoint:</strong> <span id="canary-chatgpt-cdp">-</span></div>
+            <div><strong style="color: var(--text-muted);">Conversation URL:</strong> <span id="canary-chatgpt-url" style="word-break: break-all;">-</span></div>
+            <div><strong style="color: var(--text-muted);">Conversation ID:</strong> <span id="canary-chatgpt-convid">-</span></div>
+            <div><strong style="color: var(--text-muted);">Login/Readiness:</strong> <span id="canary-chatgpt-status">-</span></div>
+          </div>
+        </div>
+
+        <!-- CLI -->
+        <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+          <h3 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">Codex CLI</h3>
+          <div style="font-size: 12px; line-height: 1.8;">
+            <div><strong style="color: var(--text-muted);">Executable Path:</strong> <span id="canary-cli-path" style="word-break: break-all;">-</span></div>
+            <div><strong style="color: var(--text-muted);">Queue Capability:</strong> <span id="canary-cli-capability">-</span></div>
+          </div>
+        </div>
+
+        <!-- Preflight -->
+        <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+          <h3 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">Preflight</h3>
+          <div style="font-size: 12px; line-height: 1.8;">
+            <div><strong style="color: var(--text-muted);">Verdict:</strong> <span id="canary-preflight-verdict">-</span></div>
+            <div><strong style="color: var(--text-muted);">Stage:</strong> <span id="canary-preflight-stage">-</span></div>
+            <div><strong style="color: var(--text-muted);">Error Code:</strong> <span id="canary-preflight-error-code">-</span></div>
+            <div><strong style="color: var(--text-muted);">Exact Blocker:</strong> <span id="canary-preflight-blocker" style="color: #f87171;">None</span></div>
+            <div><strong style="color: var(--text-muted);">Local Config:</strong> <span id="canary-preflight-config">-</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- 1. 当前状态与恢复控制 -->
     <div class="card">
@@ -125,14 +195,204 @@
       </div>
       <div class="form-group">
         <label>浏览器通道 / 人机验证状态</label>
-        <input type="text" class="form-control" value="Channel: {{ config.chatgpt.browser_type if config else 'msedge' }} | Status: {{ config.chatgpt.human_verification_state if config else 'ready' }}" readonly>
+        <input type="text" class="form-control" id="chatgpt-status-box" value="Channel: {{ config.chatgpt.browser_type if config else 'msedge' }} | Status: {{ config.chatgpt.human_verification_state if config else 'ready' }}" readonly>
       </div>
       <div class="btn-group">
-        <button class="btn btn-secondary" onclick="alert('Phase 1 浏览器观察适配器为只读/Mock 模式')">检查浏览器就绪状态</button>
+        <button class="btn btn-secondary" onclick="testChatGPTReadObservation()">探测 ChatGPT 只读响应</button>
       </div>
     </div>
 
-    <!-- 4. 报文预览与 Hash 校验 -->
+    <!-- 4. 报文对账与核对面板 (Message Reconciliation UI) -->
+    <div class="card" style="grid-column: 1 / -1;">
+      <h2>双端报文对账审计面板 (Message Reconciliation Panel)</h2>
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
+        <div style="background: var(--bg-card-sub); padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+          <h3 style="margin-top: 0; font-size: 14px; color: var(--accent);">Codex 观测详情</h3>
+          <div style="font-size: 12px; line-height: 1.6;" id="recon-codex-info">
+            <div><strong>项目路径:</strong> {{ config.codex.repo_path if config else '未配置' }}</div>
+            <div><strong>分支/线程:</strong> {{ config.codex.expected_branch if config else '' }} | {{ config.codex.thread_id[:12] if config else '' }}...</div>
+            <div><strong>会话认证:</strong> <span class="badge badge-idle" id="recon-codex-auth">待校验</span></div>
+            <div><strong>观测状态:</strong> <span id="recon-codex-obs-status">unverified</span></div>
+            <div><strong>Hash:</strong> <code id="recon-codex-hash" style="font-size: 11px;">none</code></div>
+          </div>
+        </div>
+        <div style="background: var(--bg-card-sub); padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+          <h3 style="margin-top: 0; font-size: 14px; color: var(--accent);">ChatGPT 观测详情</h3>
+          <div style="font-size: 12px; line-height: 1.6;" id="recon-chatgpt-info">
+            <div><strong>会话 URL:</strong> {{ config.chatgpt.conversation_url[:35] if config else '未配置' }}...</div>
+            <div><strong>GPT/会话认证:</strong> <span class="badge badge-idle" id="recon-chatgpt-auth">待校验</span></div>
+            <div><strong>就绪通道:</strong> <span id="recon-chatgpt-ready">offline/mock</span></div>
+            <div><strong>观测状态:</strong> <span id="recon-chatgpt-obs-status">unverified</span></div>
+            <div><strong>Hash:</strong> <code id="recon-chatgpt-hash" style="font-size: 11px;">none</code></div>
+          </div>
+        </div>
+        <div style="background: var(--bg-card-sub); padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+          <h3 style="margin-top: 0; font-size: 14px; color: var(--accent);">对账判定与投递准入</h3>
+          <div style="font-size: 12px; line-height: 1.6;" id="recon-status-info">
+            <div><strong>预期源/宿:</strong> ChatGPT &rarr; Codex GUI</div>
+            <div><strong>对账匹配判定:</strong> <span class="badge badge-idle" id="recon-match-status">UNVERIFIED</span></div>
+            <div><strong>Prompt 来源策略:</strong> <span id="recon-policy">none</span></div>
+            <div><strong>消息新鲜度:</strong> <span id="recon-freshness">unknown</span></div>
+            <div><strong>投递准入资质:</strong> <span class="badge badge-idle" id="recon-transfer-eligible">禁止投递 (只读审计)</span></div>
+            <div><strong>拦截/拒识原因:</strong> <span id="recon-ineligible-reason" style="color: var(--danger);">无已就绪的新报文</span></div>
+          </div>
+        </div>
+      </div>
+      <!-- 4.1 Codex Queue Three-Level Evidence Chain Panel -->
+      <div style="margin-top: 15px; background: var(--bg-card-sub); padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+        <h3 style="margin-top: 0; font-size: 14px; color: var(--accent);">Codex 投递三级证据链 (Queue Receipt, Turn Dispatch & Task Completion)</h3>
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; font-size: 12px; line-height: 1.6;">
+          <div style="background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px;">
+            <div><strong>1. Queue Receipt (队列接收):</strong></div>
+            <div>状态: <span class="badge badge-idle" id="recon-queue-receipt-status">none</span></div>
+            <div style="font-size: 11px; color: var(--text-muted);">Receipt ID: <code id="recon-receipt-id">none</code></div>
+            <div style="font-size: 11px; color: var(--text-muted);">Client ID: <code id="recon-client-id">none</code></div>
+          </div>
+          <div style="background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px;">
+            <div><strong>2. Turn Dispatch (轮次派发):</strong></div>
+            <div>状态: <span class="badge badge-idle" id="recon-turn-dispatch-status">none</span></div>
+            <div style="font-size: 11px; color: var(--text-muted);">Rollout Turn ID: <code id="recon-turn-id">none</code></div>
+          </div>
+          <div style="background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px;">
+            <div><strong>3. Task Completion (任务完成):</strong></div>
+            <div>状态: <span class="badge badge-idle" id="recon-task-completion-status">none</span></div>
+            <div style="font-size: 11px; color: var(--text-muted);">Final Answer: <span id="recon-final-answer">none</span></div>
+          </div>
+          <div style="background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px;">
+            <div><strong>Outcome Classification:</strong></div>
+            <div><span class="badge badge-idle" id="recon-outcome-classification">NONE</span></div>
+            <div style="font-size: 11px; color: var(--text-muted);" id="recon-outcome-desc">-</div>
+          </div>
+        </div>
+        <div id="recon-action-container" style="display: none; margin-top: 10px; padding: 8px; border-radius: 4px; background: rgba(245, 158, 11, 0.15); border: 1px solid var(--warning); font-size: 12px;">
+          <strong>Action:</strong> <span id="recon-action-text" style="color: var(--warning); font-weight: bold;">Open/resume target Codex thread — do not resend</span>
+        </div>
+        <div id="recon-completion-container" style="display: none; margin-top: 10px; padding: 8px; border-radius: 4px; background: rgba(16, 185, 129, 0.15); border: 1px solid var(--accent); font-size: 12px;">
+          <div><strong>Exact Final Answer:</strong> <code id="recon-completion-final-answer">none</code></div>
+          <div style="margin-top: 4px;"><strong>Nonce Match:</strong> <span id="recon-completion-nonce-match" class="badge badge-success">MATCHED</span></div>
+        </div>
+      </div>
+
+      <div class="btn-group" style="margin-top: 15px;">
+        <button class="btn btn-secondary" onclick="refreshCanaryBootstrap()">刷新对账状态 (Reconcile Audit)</button>
+      </div>
+    </div>
+
+
+    <!-- 5.5 Target & Authorization Guard (目标与授权安防看板) -->
+    <div class="card" id="target-guard-panel" style="grid-column: 1 / -1; border-color: var(--accent); background: var(--bg-card);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <h2 style="margin: 0; font-size: 16px;">目标与授权安防看板 (Target & Authorization Guard)</h2>
+        <div>
+          <span style="font-size: 12px; color: var(--text-muted); margin-right: 8px;">运行模式:</span>
+          <span id="guard-execution-mode-badge" class="badge badge-idle">CHECKING...</span>
+        </div>
+      </div>
+
+      <!-- Blocking Reason Alert Box -->
+      <div id="guard-blocking-alert" style="display: none; background: #3b1115; border: 1px solid #ef4444; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px;">
+        <div style="font-weight: 700; color: #fca5a5; font-size: 13px;">安全拦截警报 (Safety Guard Blocker)</div>
+        <div style="color: #fecaca; font-size: 12px; margin-top: 4px;" id="guard-blocking-desc">None</div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+        <!-- Active Configuration & Runtime Identifiers -->
+        <div style="background: var(--bg-card-sub); padding: 12px; border-radius: 6px; border: 1px solid var(--border); font-size: 12px;">
+          <h4 style="margin: 0 0 8px 0; color: var(--accent); font-size: 13px;">生效运行时配置 (Active Configuration)</h4>
+          <div style="margin-bottom: 4px;"><strong>Config Source:</strong> <span id="guard-config-source" style="font-family: monospace;">-</span></div>
+          <div style="margin-bottom: 4px;"><strong>Config Fingerprint:</strong> <code id="guard-config-fp" style="font-size: 11px;">-</code></div>
+          <div style="margin-bottom: 4px;"><strong>Canary Safety Verdict:</strong> <span id="guard-canary-safe-badge" class="badge badge-idle">-</span></div>
+          <div style="margin-bottom: 4px;"><strong>Target ChatGPT URL:</strong> <span id="guard-chatgpt-url" style="word-break: break-all; font-family: monospace;">-</span></div>
+          <div style="margin-bottom: 4px;"><strong>Target ChatGPT UUID:</strong> <code id="guard-chatgpt-id">-</code></div>
+          <div style="margin-bottom: 4px;"><strong>Target Codex Thread:</strong> <code id="guard-codex-thread">-</code></div>
+          <div><strong>Target Codex Workspace:</strong> <span id="guard-codex-workspace" style="font-family: monospace;">-</span></div>
+        </div>
+
+        <!-- Token-Bound Target & Hash Guard -->
+        <div style="background: var(--bg-card-sub); padding: 12px; border-radius: 6px; border: 1px solid var(--border); font-size: 12px;">
+          <h4 style="margin: 0 0 8px 0; color: var(--accent); font-size: 13px;">单次授权凭据绑定 (Token-Bound Destination Guard)</h4>
+          <div style="border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 6px;">
+            <div style="color: var(--text-muted); font-weight: 600;">Codex -> ChatGPT 凭据绑定:</div>
+            <div><strong>Token:</strong> <code id="guard-c2g-token" style="font-size: 11px;">none</code></div>
+            <div><strong>Bound Dest URL:</strong> <span id="guard-c2g-dest" style="word-break: break-all; font-family: monospace;">none</span></div>
+            <div><strong>Bound Fingerprint:</strong> <code id="guard-c2g-fp" style="font-size: 11px;">none</code></div>
+            <div><strong>Payload SHA-256:</strong> <code id="guard-c2g-hash" style="font-size: 11px;">none</code></div>
+          </div>
+          <div>
+            <div style="color: var(--text-muted); font-weight: 600;">ChatGPT -> Codex 凭据绑定:</div>
+            <div><strong>Token:</strong> <code id="guard-g2c-token" style="font-size: 11px;">none</code></div>
+            <div><strong>Bound Dest Thread:</strong> <code id="guard-g2c-dest" style="font-size: 11px;">none</code></div>
+            <div><strong>Bound Dest Workspace:</strong> <span id="guard-g2c-ws" style="font-family: monospace;">none</span></div>
+            <div><strong>Bound Fingerprint:</strong> <code id="guard-g2c-fp" style="font-size: 11px;">none</code></div>
+            <div><strong>Payload SHA-256:</strong> <code id="guard-g2c-hash" style="font-size: 11px;">none</code></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 6. Phase 2.3 受控双向穿梭传输控制面板 (Controlled Bidirectional Transfer Control Panel) -->
+    <div class="card" style="grid-column: 1 / -1; border-color: var(--accent);">
+      <h2>Phase 2.3 受控双向穿梭传输面板 (Controlled Transfer Panel)</h2>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+        <div style="background: var(--bg-card-sub); padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+          <h3 style="margin-top: 0; font-size: 14px; color: var(--accent);">Codex -> ChatGPT 投递通道</h3>
+          <div style="font-size: 12px; margin-bottom: 8px;">
+            <div><strong>Active Transfer ID:</strong> <code id="active-c2g-transfer-id">none</code></div>
+            <div><strong>Confirmation Token:</strong> <code id="active-c2g-token" style="font-size: 11px;">none</code></div>
+            <div><strong>Bound Destination:</strong> <span id="active-c2g-dest" style="font-size: 11px; word-break: break-all; font-family: monospace;">none</span></div>
+            <div><strong>Bound Config Fingerprint:</strong> <code id="active-c2g-fp" style="font-size: 11px;">none</code></div>
+            <div><strong>Canary Nonce:</strong> <code id="active-c2g-nonce">none</code></div>
+            <div><strong>Content Hash:</strong> <code id="active-c2g-hash" style="font-size: 11px;">none</code></div>
+          </div>
+          <div class="btn-group">
+            <button class="btn btn-secondary" onclick="prepareCodexReport()">1. 准备 Codex 报文</button>
+            <button id="c2g-send-button" class="btn" onclick="sendToChatGPT()" disabled>2. 人工确认发送至 ChatGPT</button>
+          </div>
+        </div>
+
+        <div style="background: var(--bg-card-sub); padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+          <h3 style="margin-top: 0; font-size: 14px; color: var(--accent);">ChatGPT -> Codex 投递通道</h3>
+          <div style="font-size: 12px; margin-bottom: 8px;">
+            <div><strong>Active Transfer ID:</strong> <code id="active-g2c-transfer-id">none</code></div>
+            <div><strong>Confirmation Token:</strong> <code id="active-g2c-token" style="font-size: 11px;">none</code></div>
+            <div><strong>Bound Destination:</strong> <code id="active-g2c-dest" style="font-size: 11px;">none</code></div>
+            <div><strong>Bound Config Fingerprint:</strong> <code id="active-g2c-fp" style="font-size: 11px;">none</code></div>
+            <div><strong>Content Hash:</strong> <code id="active-g2c-hash" style="font-size: 11px;">none</code></div>
+            <div><strong>Queue Receipt:</strong> <span id="active-g2c-queue-receipt" class="badge badge-idle">none</span></div>
+            <div><strong>Turn Dispatch:</strong> <span id="active-g2c-turn-dispatch" class="badge badge-idle">none</span></div>
+            <div><strong>Task Completion:</strong> <span id="active-g2c-task-completion" class="badge badge-idle">none</span></div>
+            <div><strong>Outcome:</strong> <span id="active-g2c-outcome" class="badge badge-idle">none</span></div>
+            <div id="active-g2c-action-container" style="display: none; margin-top: 6px; padding: 6px; border-radius: 4px; background: rgba(245, 158, 11, 0.15); border: 1px solid var(--warning); font-size: 11px;">
+              <strong>Action:</strong> <span id="active-g2c-action-text" style="color: var(--warning); font-weight: bold;">Open/resume target Codex thread — do not resend</span>
+            </div>
+            <div id="active-g2c-completion-container" style="display: none; margin-top: 6px; padding: 6px; border-radius: 4px; background: rgba(16, 185, 129, 0.15); border: 1px solid var(--accent); font-size: 11px;">
+              <div><strong>Exact Final Answer:</strong> <code id="active-g2c-final-answer">none</code></div>
+              <div style="margin-top: 3px;"><strong>Nonce Match:</strong> <span id="active-g2c-nonce-match" class="badge badge-success">MATCHED</span></div>
+            </div>
+          </div>
+          <div class="btn-group">
+            <button class="btn btn-secondary" onclick="observeChatGPTTurn()">3. 观察 ChatGPT 响应</button>
+            <button class="btn btn-secondary" onclick="prepareCodexPrompt()">4. 提取/编辑 Prompt</button>
+            <button id="g2c-queue-button" class="btn" onclick="submitCodexQueue()" disabled>5. 人工确认入队 Codex</button>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top: 15px; background: var(--bg-card-sub); padding: 10px; border-radius: 6px; border: 1px solid var(--border);">
+        <h4 style="margin: 0 0 5px 0; font-size: 13px; color: var(--warning);">未知投递状态调解 (Reconcile Unknown Outcome)</h4>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <input type="text" id="reconcile-transfer-id" class="form-control" style="max-width: 280px;" placeholder="Transfer ID...">
+          <select id="reconcile-resolution" class="form-control" style="max-width: 180px;">
+            <option value="mark_delivered">标记为已成功投递</option>
+            <option value="mark_cancelled">标记为放弃/取消投递</option>
+          </select>
+          <input type="text" id="reconcile-notes" class="form-control" placeholder="调解审计备注说明...">
+          <button class="btn btn-secondary" onclick="reconcileUnknownOutcome()">执行调解</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5. 报文预览与 Hash 校验 -->
     <div class="card">
       <h2>报文预览与 SHA-256 指纹 (Message Preview & Hash)</h2>
       <div class="form-group">
@@ -144,7 +404,7 @@
         <button class="btn btn-secondary" onclick="triggerMockTransfer()">执行 Phase 1 Mock 投递</button>
       </div>
       <div style="margin-top: 10px;">
-        <label style="font-size: 12px; color: var(--text-muted);">计算结果:</label>
+        <label style="font-size: 12px; color: var(--text-muted);">计算结果 / 观察详情:</label>
         <pre id="hash-output">未计算</pre>
       </div>
     </div>
@@ -181,11 +441,10 @@
   </div>
 
   <script>
-    async function refreshState() {
+    async function refreshState(data = null) {
       try {
-        const res = await fetch('/api/state');
-        if (res.ok) {
-          const data = await res.json();
+        if (!data) { const res = await fetch('/api/state'); if (!res.ok) return; data = await res.json(); }
+        {
           document.getElementById('state-stage').value = data.stage;
           document.getElementById('current-stage-badge').innerText = data.stage;
           document.getElementById('state-iter').value = data.iteration_id;
@@ -241,10 +500,29 @@
       const data = await res.json();
       if (data.status === 'found') {
         document.getElementById('preview-text').value = data.preview;
-        document.getElementById('hash-output').innerText = `发现响应!\nTurn ID: ${data.turn_id}\nSHA-256: ${data.sha256}\nLength: ${data.length}`;
+        document.getElementById('hash-output').innerText = `[Codex 响应捕获成功]\nTurn ID: ${data.turn_id}\nSHA-256: ${data.sha256}\nLength: ${data.length}\nUser turns: ${data.user_turns_count} | Assistant turns: ${data.assistant_turns_count}\nValid: ${data.metadata_valid}`;
         refreshState();
       } else {
         alert(data.message || '未找到新响应');
+      }
+    }
+
+    async function testChatGPTReadObservation() {
+      const res = await fetch('/api/chatgpt/observe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const data = await res.json();
+      const bStatus = data.browser_status || {};
+      document.getElementById('chatgpt-status-box').value = `Connected: ${bStatus.connected || false} | Ready: ${bStatus.ready || false} | Blocked: ${bStatus.human_verification_required || false}`;
+      if (data.status === 'ready' && data.latest_response) {
+        const resp = data.latest_response;
+        document.getElementById('preview-text').value = resp.extracted_prompt || resp.text;
+        document.getElementById('hash-output').innerText = `[ChatGPT 报文只读捕获成功]\n来源策略: ${resp.provenance_policy}\n报文 SHA-256: ${resp.content_hash}\nPrompt SHA-256: ${resp.extracted_prompt_hash}\n预览: ${resp.extracted_prompt ? resp.extracted_prompt.slice(0, 100) : resp.text.slice(0, 100)}...`;
+        refreshState();
+      } else {
+        document.getElementById('hash-output').innerText = `[ChatGPT 观察状态: ${data.status}]\n拦截原因: ${bStatus.interstitial_reason || '暂无就绪消息'}`;
       }
     }
 
@@ -291,7 +569,719 @@
       }
     }
 
-    setInterval(refreshState, 3000);
+    async function refreshReconciliation(data = null) {
+      try {
+        if (!data) { const res = await fetch('/api/reconciliation'); if (!res.ok) return; data = await res.json(); }
+        const codex = data.codex || {};
+        const chatgpt = data.chatgpt || {};
+        const recon = data.reconciliation || {};
+
+        // Codex
+        document.getElementById('recon-codex-auth').innerText = codex.verified_session_identity ? '身份匹配验证通过' : '身份待核验';
+        document.getElementById('recon-codex-auth').className = codex.verified_session_identity ? 'badge badge-success' : 'badge badge-error';
+        document.getElementById('recon-codex-obs-status').innerText = codex.observation_status || 'unverified';
+        document.getElementById('recon-codex-hash').innerText = (codex.content_hash || 'none').slice(0, 16) + '...';
+
+        // ChatGPT
+        document.getElementById('recon-chatgpt-auth').innerText = chatgpt.verified_identity ? '身份匹配验证通过' : '身份待核验/受限';
+        document.getElementById('recon-chatgpt-auth').className = chatgpt.verified_identity ? 'badge badge-success' : 'badge badge-error';
+        document.getElementById('recon-chatgpt-ready').innerText = chatgpt.browser_readiness || 'unknown';
+        document.getElementById('recon-chatgpt-obs-status').innerText = chatgpt.observation_status || 'unverified';
+        document.getElementById('recon-chatgpt-hash').innerText = (chatgpt.content_hash || 'none').slice(0, 16) + '...';
+
+        // Reconciliation
+        const matchStatus = recon.match_status || 'UNVERIFIED';
+        const matchBadge = document.getElementById('recon-match-status');
+        matchBadge.innerText = matchStatus;
+        if (matchStatus === 'MATCHED') {
+          matchBadge.className = 'badge badge-success';
+        } else if (matchStatus === 'MISMATCH') {
+          matchBadge.className = 'badge badge-error';
+        } else {
+          matchBadge.className = 'badge badge-idle';
+        }
+
+        document.getElementById('recon-policy').innerText = recon.provenance_policy || 'none';
+        document.getElementById('recon-freshness').innerText = !recon.extracted_prompt_hash ? 'No current prompt (尚无当前 Prompt)' : (recon.is_fresh ? 'Fresh (新生成)' : 'Historical/Stale (陈旧/历史)');
+        document.getElementById('recon-freshness').style.color = recon.is_fresh ? 'var(--success)' : 'var(--warning)';
+
+        const eligBadge = document.getElementById('recon-transfer-eligible');
+        if (recon.transfer_eligible) {
+          eligBadge.innerText = '准入就绪 (Phase 2 只读保护)';
+          eligBadge.className = 'badge badge-warning';
+        } else {
+          eligBadge.innerText = '禁止投递 (不符合准入条件)';
+          eligBadge.className = 'badge badge-idle';
+        }
+        document.getElementById('recon-ineligible-reason').innerText = recon.ineligibility_reason || '无拦截项 (待 operator 手动审阅)';
+        // 3-Level Evidence Chain
+        const codexDelivery = data.codex_delivery || recon.codex_delivery || {};
+        const qReceipt = codexDelivery.queue_receipt_status || recon.queue_receipt_status || 'none';
+        const tDispatch = codexDelivery.turn_dispatch_status || recon.turn_dispatch_status || 'none';
+        const tComplete = codexDelivery.task_completion_status || recon.task_completion_status || 'none';
+        const outcome = codexDelivery.outcome_classification || recon.outcome_classification || 'NONE';
+
+        const el = (id) => document.getElementById(id);
+
+        if (el('recon-queue-receipt-status')) {
+          const qrText = qReceipt === 'accepted' ? 'Accepted' : (qReceipt === 'rejected' ? 'Rejected' : qReceipt);
+          el('recon-queue-receipt-status').innerText = qrText;
+          el('recon-queue-receipt-status').className = qReceipt === 'accepted' ? 'badge badge-success' : (qReceipt === 'rejected' ? 'badge badge-error' : 'badge badge-idle');
+        }
+        if (el('recon-receipt-id')) el('recon-receipt-id').innerText = codexDelivery.receipt_id || '-';
+        if (el('recon-client-id')) el('recon-client-id').innerText = codexDelivery.client_user_message_id || '-';
+
+        if (el('recon-turn-dispatch-status')) {
+          const tdText = tDispatch === 'dispatched' ? 'Confirmed' : (tDispatch === 'pending' ? 'Pending' : tDispatch);
+          el('recon-turn-dispatch-status').innerText = tdText;
+          el('recon-turn-dispatch-status').className = tDispatch === 'dispatched' ? 'badge badge-success' : (tDispatch === 'pending' ? 'badge badge-warning' : 'badge badge-idle');
+        }
+        if (el('recon-turn-id')) el('recon-turn-id').innerText = codexDelivery.turn_id || '-';
+
+        if (el('recon-task-completion-status')) {
+          const tcText = tComplete === 'completed' ? 'Confirmed' : (tComplete === 'pending' ? 'Pending' : tComplete);
+          el('recon-task-completion-status').innerText = tcText;
+          el('recon-task-completion-status').className = tComplete === 'completed' ? 'badge badge-success' : (tComplete === 'pending' ? 'badge badge-warning' : 'badge badge-idle');
+        }
+        if (el('recon-final-answer')) el('recon-final-answer').innerText = codexDelivery.final_answer || (codexDelivery.canary_ok_verified ? 'CANARY-OK VERIFIED' : '-');
+
+        if (el('recon-outcome-classification')) {
+          el('recon-outcome-classification').innerText = outcome;
+          if (outcome === 'CODEX_QUEUE_AND_TASK_COMPLETED') {
+            el('recon-outcome-classification').className = 'badge badge-success';
+          } else if (outcome === 'CODEX_QUEUE_DISPATCHED_TASK_PENDING' || outcome === 'CODEX_QUEUE_ACCEPTED_NOT_DISPATCHED') {
+            el('recon-outcome-classification').className = 'badge badge-warning';
+          } else if (outcome === 'CODEX_NOT_SENT') {
+            el('recon-outcome-classification').className = 'badge badge-idle';
+          } else {
+            el('recon-outcome-classification').className = 'badge badge-error';
+          }
+        }
+
+        const actionText = codexDelivery.action_instruction || (outcome === 'CODEX_QUEUE_ACCEPTED_NOT_DISPATCHED' ? 'Open/resume target Codex thread — do not resend' : null);
+        if (el('recon-action-container') && el('recon-action-text')) {
+          if (actionText) {
+            el('recon-action-container').style.display = 'block';
+            el('recon-action-text').innerText = actionText;
+          } else {
+            el('recon-action-container').style.display = 'none';
+          }
+        }
+
+        if (el('recon-completion-container')) {
+          if (tComplete === 'completed' || outcome === 'CODEX_QUEUE_AND_TASK_COMPLETED') {
+            el('recon-completion-container').style.display = 'block';
+            if (el('recon-completion-final-answer')) el('recon-completion-final-answer').innerText = codexDelivery.final_answer || '-';
+            if (el('recon-completion-nonce-match')) {
+              el('recon-completion-nonce-match').className = (codexDelivery.nonce_matched || codexDelivery.canary_ok_verified) ? 'badge badge-success' : 'badge badge-error';
+              el('recon-completion-nonce-match').innerText = (codexDelivery.nonce_matched || codexDelivery.canary_ok_verified) ? 'MATCHED' : 'MISMATCH';
+            }
+          } else {
+            el('recon-completion-container').style.display = 'none';
+          }
+        }
+      } catch (e) {
+        console.error('Failed to refresh reconciliation', e);
+      }
+    }
+
+
+    let currentRuntimeTargetInfo = null;
+    let activeC2GTransfer = null;
+    let activeG2CTransfer = null;
+
+    async function refreshTargetInfo(data = null) {
+      try {
+        if (!data) { const res = await fetch('/api/transfer/target_info'); if (!res.ok) return; data = await res.json(); }
+        currentRuntimeTargetInfo = data;
+
+        const el = (id) => document.getElementById(id);
+
+        const modeBadge = el('guard-execution-mode-badge');
+        if (modeBadge) {
+          modeBadge.innerText = data.execution_mode || 'UNKNOWN';
+          if (data.execution_mode === 'CANARY') {
+            modeBadge.className = 'badge badge-success';
+          } else {
+            modeBadge.className = 'badge badge-warn';
+          }
+        }
+
+        if (el('guard-config-source')) el('guard-config-source').innerText = data.config_source || '-';
+        if (el('guard-config-fp')) el('guard-config-fp').innerText = data.config_fingerprint || '-';
+
+        const safeBadge = el('guard-canary-safe-badge');
+        if (safeBadge) {
+          if (data.canary_mode) {
+            if (data.canary_safe) {
+              safeBadge.className = 'badge badge-success';
+              safeBadge.innerText = 'SAFE (Isolated Canary Target)';
+            } else {
+              safeBadge.className = 'badge badge-danger';
+              safeBadge.innerText = 'UNSAFE (Production Target Detected)';
+            }
+          } else {
+            safeBadge.className = 'badge badge-idle';
+            safeBadge.innerText = 'N/A (Production Mode)';
+          }
+        }
+
+        const chatgpt = data.chatgpt || {};
+        const codex = data.codex || {};
+        if (el('guard-chatgpt-url')) el('guard-chatgpt-url').innerText = chatgpt.conversation_url || '-';
+        if (el('guard-chatgpt-id')) el('guard-chatgpt-id').innerText = chatgpt.conversation_id || '-';
+        if (el('guard-codex-thread')) el('guard-codex-thread').innerText = codex.thread_id || '-';
+        if (el('guard-codex-workspace')) el('guard-codex-workspace').innerText = codex.repo_path || '-';
+
+        const alertBox = el('guard-blocking-alert');
+        const alertDesc = el('guard-blocking-desc');
+        if (alertBox && alertDesc) {
+          if (data.blocking_reason) {
+            alertBox.style.display = 'block';
+            alertDesc.innerText = data.blocking_reason;
+          } else {
+            alertBox.style.display = 'none';
+          }
+        }
+      } catch (e) {
+        console.error('Error fetching target_info:', e);
+      }
+    }
+
+    function handleTargetInputModification() {
+      disableTransferButtons();
+      if (activeC2GTransfer || activeG2CTransfer) {
+        activeC2GTransfer = null;
+        activeG2CTransfer = null;
+        const el = (id) => document.getElementById(id);
+        const tokenElements = [
+          'active-c2g-token', 'active-g2c-token',
+          'active-c2g-dest', 'active-g2c-dest',
+          'active-c2g-fp', 'active-g2c-fp',
+          'guard-c2g-token', 'guard-g2c-token',
+          'guard-c2g-dest', 'guard-g2c-dest',
+          'guard-c2g-fp', 'guard-g2c-fp'
+        ];
+        tokenElements.forEach(id => {
+          if (el(id)) el(id).innerText = 'invalidated (UI selection modified)';
+        });
+        if (el('guard-blocking-alert') && el('guard-blocking-desc')) {
+          el('guard-blocking-alert').style.display = 'block';
+          el('guard-blocking-desc').innerText = 'UI selection inputs were modified after transfer preparation. All active authorization tokens have been invalidated to prevent retargeting. Prepare a new transfer to proceed.';
+        }
+      }
+    }
+
+    async function prepareCanaryReport() {
+      if (currentRuntimeTargetInfo && currentRuntimeTargetInfo.canary_mode && !currentRuntimeTargetInfo.canary_safe) {
+        alert('Canary 模式下检测到生产目标配置，已被安全拦截！\n原因: ' + (currentRuntimeTargetInfo.blocking_reason || '不符合 Canary 隔离标准'));
+        return;
+      }
+      try {
+        const res = await fetch('/api/transfer/codex_report/prepare', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ is_canary: true, iteration_id: 1 })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+        activeC2GTransfer = data;
+        const el = (id) => document.getElementById(id);
+        if (el('active-c2g-transfer-id')) el('active-c2g-transfer-id').innerText = data.transfer_id;
+        if (el('active-c2g-token')) el('active-c2g-token').innerText = data.confirmation_token;
+        if (el('active-c2g-dest')) el('active-c2g-dest').innerText = data.destination_identifier || data.destination || '-';
+        if (el('active-c2g-fp')) el('active-c2g-fp').innerText = (data.config_fingerprint || '-').slice(0, 16) + '...';
+        if (el('active-c2g-hash')) el('active-c2g-hash').innerText = data.content_hash;
+
+        if (el('guard-c2g-token')) el('guard-c2g-token').innerText = data.confirmation_token;
+        if (el('guard-c2g-dest')) el('guard-c2g-dest').innerText = data.destination_identifier || data.destination || '-';
+        if (el('guard-c2g-fp')) el('guard-c2g-fp').innerText = data.config_fingerprint || '-';
+        if (el('guard-c2g-hash')) el('guard-c2g-hash').innerText = data.content_hash;
+
+        if (el('preview-text')) el('preview-text').value = data.report_text;
+        if (el('hash-output')) el('hash-output').innerText =
+          `Canary request prepared\nTransfer: ${data.transfer_id}\nDestination: ${data.destination_identifier || data.destination}\nConfig FP: ${data.config_fingerprint}\nSHA-256: ${data.content_hash}\nNonce: ${data.canary_nonce}\nExpected prompt:\n${data.expected_prompt}`;
+        refreshState();
+        refreshCanaryBootstrap();
+      } catch (e) {
+        alert('Canary preparation rejected: ' + e.message);
+      }
+    }
+
+    async function prepareCodexReport() {
+      if (currentRuntimeTargetInfo && currentRuntimeTargetInfo.canary_mode) {
+        if (!currentRuntimeTargetInfo.canary_safe) {
+          alert('Canary 模式下检测到生产目标配置，已被安全拦截！\n原因: ' + (currentRuntimeTargetInfo.blocking_reason || '不符合 Canary 隔离标准'));
+          return;
+        }
+        return prepareCanaryReport();
+      }
+      const threadId = document.getElementById('codex-thread-id').value;
+      const expectedCwd = document.getElementById('codex-repo').value;
+      const previewText = document.getElementById('preview-text').value;
+      let customText = null;
+      let isCanary = false;
+      if (previewText && previewText.trim()) {
+        if (confirm('是否使用预览框中的文本作为报文？')) {
+          customText = previewText.trim();
+          isCanary = customText.toLowerCase().includes('canary');
+        }
+      }
+      try {
+        const res = await fetch('/api/transfer/codex_report/prepare', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            thread_id: threadId || null,
+            expected_cwd: expectedCwd || null,
+            report_text: customText,
+            is_canary: isCanary,
+            iteration_id: 1
+          })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          activeC2GTransfer = data;
+          const el = (id) => document.getElementById(id);
+          if (el('active-c2g-transfer-id')) el('active-c2g-transfer-id').innerText = data.transfer_id;
+          if (el('active-c2g-token')) el('active-c2g-token').innerText = data.confirmation_token;
+          if (el('active-c2g-dest')) el('active-c2g-dest').innerText = data.destination_identifier || data.destination || '-';
+          if (el('active-c2g-fp')) el('active-c2g-fp').innerText = (data.config_fingerprint || '-').slice(0, 16) + '...';
+          if (el('active-c2g-hash')) el('active-c2g-hash').innerText = data.content_hash.slice(0, 16) + '...';
+
+          if (el('guard-c2g-token')) el('guard-c2g-token').innerText = data.confirmation_token;
+          if (el('guard-c2g-dest')) el('guard-c2g-dest').innerText = data.destination_identifier || data.destination || '-';
+          if (el('guard-c2g-fp')) el('guard-c2g-fp').innerText = data.config_fingerprint || '-';
+          if (el('guard-c2g-hash')) el('guard-c2g-hash').innerText = data.content_hash;
+
+          if (el('preview-text')) el('preview-text').value = data.report_text;
+          if (el('hash-output')) el('hash-output').innerText = '[Codex 报文已就绪]\nTransfer ID: ' + data.transfer_id + '\nDestination: ' + (data.destination_identifier || data.destination) + '\nConfig FP: ' + data.config_fingerprint + '\nSHA-256: ' + data.content_hash + '\n字符数: ' + data.char_count + '\nToken: ' + data.confirmation_token;
+          refreshState();
+          refreshCanaryBootstrap();
+        } else {
+          alert('Codex 报文准备失败: ' + (data.detail || JSON.stringify(data)));
+        }
+      } catch (e) {
+        alert('请求失败: ' + e.message);
+      }
+    }
+
+    async function sendToChatGPT() {
+      await refreshCanaryBootstrap();
+      if (document.getElementById('c2g-send-button').disabled) return;
+      disableTransferButtons();
+      if (!activeC2GTransfer) {
+        alert('请先准备 Codex 报文获取单次授权凭据');
+        return;
+      }
+      if (currentRuntimeTargetInfo && currentRuntimeTargetInfo.chatgpt) {
+        const activeUrl = currentRuntimeTargetInfo.chatgpt.conversation_url;
+        const boundUrl = activeC2GTransfer.destination_identifier || activeC2GTransfer.destination;
+        if (activeUrl && boundUrl && activeUrl !== boundUrl) {
+          alert('目标 ChatGPT URL 发生变动！\n凭据绑定: ' + boundUrl + '\n当前生效: ' + activeUrl + '\n禁止向未授权目标投递，请重新准备报文。');
+          return;
+        }
+      }
+      if (!confirm('确认向 ChatGPT 提交报文 (Transfer ID: ' + activeC2GTransfer.transfer_id + '，目标: ' + (activeC2GTransfer.destination_identifier || activeC2GTransfer.destination) + ')？')) {
+        return;
+      }
+      try {
+        const res = await fetch('/api/transfer/chatgpt/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            transfer_id: activeC2GTransfer.transfer_id,
+            confirmation_token: activeC2GTransfer.confirmation_token
+          })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          alert('投递成功至 ChatGPT！');
+          refreshState();
+          refreshCanaryBootstrap();
+        } else {
+          alert('投递异常: ' + (data.detail || JSON.stringify(data)));
+          refreshState();
+          refreshCanaryBootstrap();
+        }
+      } catch (e) {
+        alert('网络或服务异常: ' + e.message);
+      }
+    }
+
+    async function observeChatGPTTurn() {
+      try {
+        const res = await fetch('/api/transfer/chatgpt/observe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'ready') {
+          const obs = data.observation || {};
+          const ext = data.extraction || {};
+          document.getElementById('preview-text').value = ext.extracted_prompt_preview || obs.raw_text || '';
+          document.getElementById('hash-output').innerText = '[ChatGPT 响应观测就绪]\n状态: ' + data.status + '\nHash: ' + (obs.content_hash || 'none') + '\n准入: ' + obs.transfer_eligible + '\n策略: ' + (ext.provenance_policy || 'none');
+          refreshState();
+          refreshCanaryBootstrap();
+        } else {
+          alert('ChatGPT 响应尚不可用或不符合准入: ' + JSON.stringify(data));
+        }
+      } catch (e) {
+        alert('请求异常: ' + e.message);
+      }
+    }
+
+    async function prepareCodexPrompt() {
+      if (currentRuntimeTargetInfo && currentRuntimeTargetInfo.canary_mode && !currentRuntimeTargetInfo.canary_safe) {
+        alert('Canary 模式下检测到生产目标配置，已被安全拦截！\n原因: ' + (currentRuntimeTargetInfo.blocking_reason || '不符合 Canary 隔离标准'));
+        return;
+      }
+      const isCanary = Boolean(currentRuntimeTargetInfo && currentRuntimeTargetInfo.canary_mode);
+      const edited = document.getElementById('preview-text').value;
+      let isMod = false;
+      if (!isCanary) {
+        isMod = confirm('是否以当前预览框中的内容作为投递 Prompt (若修改将重新计算指纹并标记为 operator_modified)？');
+      }
+      try {
+        const res = await fetch('/api/transfer/codex_prompt/prepare', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt_text: isMod ? edited : null,
+            is_operator_modified: isMod,
+            iteration_id: 1
+          })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          activeG2CTransfer = data;
+          const el = (id) => document.getElementById(id);
+          const destThread = data.destination_identifier || data.destination_thread_id || data.destination || '-';
+          if (el('active-g2c-transfer-id')) el('active-g2c-transfer-id').innerText = data.transfer_id;
+          if (el('active-g2c-token')) el('active-g2c-token').innerText = data.confirmation_token;
+          if (el('active-g2c-dest')) el('active-g2c-dest').innerText = destThread;
+          if (el('active-g2c-fp')) el('active-g2c-fp').innerText = (data.config_fingerprint || '-').slice(0, 16) + '...';
+          if (el('active-g2c-hash')) el('active-g2c-hash').innerText = data.content_hash.slice(0, 16) + '...';
+
+          if (el('guard-g2c-token')) el('guard-g2c-token').innerText = data.confirmation_token;
+          if (el('guard-g2c-dest')) el('guard-g2c-dest').innerText = destThread;
+          if (el('guard-g2c-ws')) el('guard-g2c-ws').innerText = data.destination_workspace || '-';
+          if (el('guard-g2c-fp')) el('guard-g2c-fp').innerText = data.config_fingerprint || '-';
+          if (el('guard-g2c-hash')) el('guard-g2c-hash').innerText = data.content_hash;
+
+          if (el('hash-output')) el('hash-output').innerText = '[Codex 入队 Prompt 已就绪]\nTransfer ID: ' + data.transfer_id + '\nDestination Thread: ' + destThread + '\nConfig FP: ' + data.config_fingerprint + '\nSHA-256: ' + data.content_hash + '\n修改标记: ' + data.is_operator_modified + '\nToken: ' + data.confirmation_token;
+          refreshState();
+          refreshCanaryBootstrap();
+        } else {
+          alert('Prompt 准备失败: ' + (data.detail || JSON.stringify(data)));
+        }
+      } catch (e) {
+        alert('请求异常: ' + e.message);
+      }
+    }
+
+    async function submitCodexQueue() {
+      await refreshCanaryBootstrap();
+      if (document.getElementById('g2c-queue-button').disabled) return;
+      disableTransferButtons();
+      if (!activeG2CTransfer) {
+        alert('请先准备并预览 Prompt 获取单次授权凭据');
+        return;
+      }
+      const boundThread = activeG2CTransfer.destination_identifier || activeG2CTransfer.destination_thread_id || activeG2CTransfer.destination;
+      const inputThread = document.getElementById('codex-thread-id').value;
+      if (inputThread && inputThread.trim() && boundThread && inputThread.trim().toLowerCase() !== boundThread.trim().toLowerCase()) {
+        alert('UI 目标线程已被手动修改，与凭据绑定的目标线程不一致！\n凭据绑定: ' + boundThread + '\nUI 当前值: ' + inputThread + '\n\n禁止篡改重定向！操作已拦截。如需入队新目标，请重新准备报文。');
+        return;
+      }
+      if (!confirm('确认向 Codex GUI 目标线程入队 Prompt (Transfer ID: ' + activeG2CTransfer.transfer_id + '，目标: ' + boundThread + ')？')) {
+        return;
+      }
+      const repoPath = document.getElementById('codex-repo').value;
+      try {
+        const res = await fetch('/api/transfer/codex_queue/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            transfer_id: activeG2CTransfer.transfer_id,
+            confirmation_token: activeG2CTransfer.confirmation_token,
+            thread_id: boundThread,
+            repo_path: repoPath || null
+          })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          alert('成功入队 Codex GUI 线程！');
+          refreshState();
+          refreshCanaryBootstrap();
+        } else {
+          alert('入队异常: ' + (data.detail || JSON.stringify(data)));
+        }
+      } catch (e) {
+        alert('请求异常: ' + e.message);
+      }
+    }
+
+    async function refreshEventLogs() {
+      try {
+        const res = await fetch('/api/logs?limit=30');
+        if (!res.ok) return;
+        const data = await res.json();
+        const tbody = document.getElementById('logs-tbody');
+        if (!tbody || !data.logs) return;
+        tbody.innerHTML = data.logs.map(l => `
+          <tr>
+            <td>${l.id}</td>
+            <td>${l.created_at}</td>
+            <td><span class="badge badge-progress">${l.stage}</span></td>
+            <td>${l.event_type}</td>
+            <td>${l.message}</td>
+          </tr>
+        `).join('');
+      } catch (e) {
+        console.error('Failed to refresh logs:', e);
+      }
+    }
+
+    async function reconcileUnknownOutcome() {
+      const tidEl = document.getElementById('reconcile-transfer-id');
+      const resEl = document.getElementById('reconcile-resolution');
+      const notesEl = document.getElementById('reconcile-notes');
+      const tid = tidEl ? tidEl.value.trim() : '';
+      const res = resEl ? resEl.value : 'mark_delivered';
+      const notes = notesEl ? notesEl.value : '';
+      if (!tid) {
+        alert('请输入 Transfer ID');
+        return;
+      }
+      try {
+        const r = await fetch('/api/transfer/reconcile_unknown', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ transfer_id: tid, resolution: res, notes: notes })
+        });
+        const data = await r.json();
+        if (r.ok) {
+          if (tidEl) tidEl.value = '';
+          if (notesEl) notesEl.value = '';
+          if (resEl) resEl.value = 'mark_delivered';
+          alert('调解成功！当前状态: ' + data.new_stage);
+          await refreshCanaryBootstrap();
+          await refreshEventLogs();
+        } else {
+          alert('调解失败: ' + (data.detail || JSON.stringify(data)));
+        }
+      } catch (e) {
+        alert('请求异常: ' + e.message);
+      }
+    }
+
+    let runtimeRefreshInFlight = null;
+    function disableTransferButtons() {
+      document.getElementById('c2g-send-button').disabled = true;
+      document.getElementById('g2c-queue-button').disabled = true;
+    }
+
+    function renderRuntimeSnapshot(snapshot) {
+      const ready = snapshot.readiness || {};
+      updateCanaryUI(snapshot.bootstrap || {});
+      refreshState(snapshot.state);
+      refreshTargetInfo(snapshot.target_info);
+      refreshReconciliation(snapshot.reconciliation);
+      document.getElementById('runtime-readiness').innerText = ready.status || 'UNKNOWN';
+      document.getElementById('runtime-blocker').innerText = ready.blocker || 'No current blocker';
+      const browser = ready.browser_status || {};
+      document.getElementById('canary-chatgpt-status').innerText = browser.ready ? 'live_ready (已实时验证)' : 'not_ready (等待实时验证)';
+      document.getElementById('chatgpt-status-box').value = `Connected: ${!!browser.connected} | Ready: ${!!browser.ready} | Blocked: ${!!browser.human_verification_required}`;
+      const transfers = ready.transfers || {};
+      activeC2GTransfer = transfers.c2g?.transfer || null;
+      activeG2CTransfer = transfers.g2c?.transfer || null;
+      for (const [key, transfer] of [['c2g', activeC2GTransfer], ['g2c', activeG2CTransfer]]) {
+        const fields = {'transfer-id': 'transfer_id', token: 'confirmation_token', dest: 'destination_identifier', fp: 'config_fingerprint', hash: 'content_hash'};
+        for (const [suffix, field] of Object.entries(fields)) {
+          for (const prefix of ['active', 'guard']) {
+            const el = document.getElementById(`${prefix}-${key}-${suffix}`);
+            if (el) el.innerText = transfer?.[field] || 'none';
+          }
+        }
+      }
+      document.getElementById('active-c2g-nonce').innerText = activeC2GTransfer?.provenance_policy?.split(':')[1] || 'none';
+      if (activeG2CTransfer) {
+        const ev = activeG2CTransfer.delivery_evidence || {};
+        const el = (id) => document.getElementById(id);
+        const qr = ev.queue_receipt_status || (activeG2CTransfer.status === 'delivered' ? 'accepted' : 'none');
+        const td = ev.turn_dispatch_status || 'none';
+        const tc = ev.task_completion_status || 'none';
+        const oc = ev.outcome_classification || activeG2CTransfer.outcome_classification || 'none';
+
+        if (el('active-g2c-queue-receipt')) {
+          const qrText = qr === 'accepted' ? 'Accepted' : (qr === 'rejected' ? 'Rejected' : qr);
+          el('active-g2c-queue-receipt').innerText = qrText;
+          el('active-g2c-queue-receipt').className = qr === 'accepted' ? 'badge badge-success' : (qr === 'rejected' ? 'badge badge-error' : 'badge badge-idle');
+        }
+        if (el('active-g2c-turn-dispatch')) {
+          const tdText = td === 'dispatched' ? 'Confirmed' : (td === 'pending' ? 'Pending' : td);
+          el('active-g2c-turn-dispatch').innerText = tdText;
+          el('active-g2c-turn-dispatch').className = td === 'dispatched' ? 'badge badge-success' : (td === 'pending' ? 'badge badge-warning' : 'badge badge-idle');
+        }
+        if (el('active-g2c-task-completion')) {
+          const tcText = tc === 'completed' ? 'Confirmed' : (tc === 'pending' ? 'Pending' : tc);
+          el('active-g2c-task-completion').innerText = tcText;
+          el('active-g2c-task-completion').className = tc === 'completed' ? 'badge badge-success' : (tc === 'pending' ? 'badge badge-warning' : 'badge badge-idle');
+        }
+        if (el('active-g2c-outcome')) {
+          el('active-g2c-outcome').innerText = oc;
+        }
+
+        const actionText = ev.action_instruction || (oc === 'CODEX_QUEUE_ACCEPTED_NOT_DISPATCHED' ? 'Open/resume target Codex thread — do not resend' : null);
+        if (el('active-g2c-action-container') && el('active-g2c-action-text')) {
+          if (actionText) {
+            el('active-g2c-action-container').style.display = 'block';
+            el('active-g2c-action-text').innerText = actionText;
+          } else {
+            el('active-g2c-action-container').style.display = 'none';
+          }
+        }
+
+        if (el('active-g2c-completion-container')) {
+          if (tc === 'completed' || oc === 'CODEX_QUEUE_AND_TASK_COMPLETED') {
+            el('active-g2c-completion-container').style.display = 'block';
+            if (el('active-g2c-final-answer')) el('active-g2c-final-answer').innerText = ev.assistant_reply_text || ev.final_answer || '-';
+            if (el('active-g2c-nonce-match')) {
+              el('active-g2c-nonce-match').className = (ev.nonce_matched || ev.canary_ok_verified) ? 'badge badge-success' : 'badge badge-error';
+              el('active-g2c-nonce-match').innerText = (ev.nonce_matched || ev.canary_ok_verified) ? 'MATCHED' : 'MISMATCH';
+            }
+          } else {
+            el('active-g2c-completion-container').style.display = 'none';
+          }
+        }
+      }
+      document.getElementById('c2g-send-button').disabled = !(ready.c2g_send_enabled && activeC2GTransfer?.transfer_id && activeC2GTransfer?.confirmation_token && activeC2GTransfer?.content_hash);
+      document.getElementById('g2c-queue-button').disabled = !(ready.g2c_queue_enabled && activeG2CTransfer?.transfer_id && activeG2CTransfer?.confirmation_token && activeG2CTransfer?.content_hash);
+    }
+
+    async function refreshCanaryBootstrap() {
+      if (runtimeRefreshInFlight) return runtimeRefreshInFlight;
+      disableTransferButtons();
+      runtimeRefreshInFlight = (async () => {
+        try {
+          const res = await fetch('/api/runtime/refresh');
+          if (res.status === 404) {
+            await refreshTargetInfo();
+            await refreshState();
+            const error = new Error('The running backend must be restarted with the displayed effective config to load runtime synchronization.');
+            error.readinessStatus = 'RUNTIME_RESTART_REQUIRED';
+            throw error;
+          }
+          if (!res.ok) throw new Error('Runtime refresh failed');
+          renderRuntimeSnapshot(await res.json());
+        } catch (e) {
+          disableTransferButtons();
+          document.getElementById('runtime-readiness').innerText = e.readinessStatus || 'RUNTIME_STATUS_UNAVAILABLE';
+          document.getElementById('runtime-blocker').innerText = e.message;
+        } finally {
+          runtimeRefreshInFlight = null;
+        }
+      })();
+      return runtimeRefreshInFlight;
+    }
+
+    async function recheckCanaryBootstrap() {
+      if (runtimeRefreshInFlight) await runtimeRefreshInFlight;
+      disableTransferButtons();
+      const badge = document.getElementById('canary-verdict-badge');
+      if (badge) {
+        badge.className = 'badge badge-progress';
+        badge.innerText = 'RECHECKING...';
+      }
+      try {
+        const res = await fetch('/api/canary/bootstrap/recheck', { method: 'POST' });
+        const data = await res.json();
+        renderRuntimeSnapshot(data.runtime_snapshot);
+      } catch (e) {
+        disableTransferButtons();
+        alert('Recheck error: ' + e.message);
+      }
+    }
+
+    function updateCanaryUI(data) {
+      const badge = document.getElementById('canary-verdict-badge');
+      const actionBox = document.getElementById('canary-human-action-box');
+      const actionDesc = document.getElementById('canary-human-action-desc');
+      const verdict = data.verdict || 'UNKNOWN';
+
+      if (badge) {
+        if (verdict === 'CANARY_PREFLIGHT_VERIFIED') {
+          badge.className = 'badge badge-success';
+          badge.innerText = 'VERIFIED';
+        } else if (verdict.startsWith('HUMAN_ACTION_REQUIRED')) {
+          badge.className = 'badge badge-warn';
+          badge.innerText = 'HUMAN ACTION REQUIRED';
+        } else if (verdict === 'CANARY_BOOTSTRAP_BLOCKED') {
+          badge.className = 'badge badge-danger';
+          badge.innerText = 'BLOCKED';
+        } else {
+          badge.className = 'badge badge-idle';
+          badge.innerText = verdict;
+        }
+      }
+
+      if (actionBox && actionDesc) {
+        if (data.human_action) {
+          actionBox.style.display = 'block';
+          actionDesc.innerText = data.human_action;
+        } else {
+          actionBox.style.display = 'none';
+        }
+      }
+
+      const sub = data.subsystems || {};
+      const codex = sub.codex || {};
+      const chatgpt = sub.chatgpt || {};
+      const cli = sub.cli || {};
+
+      const el = (id) => document.getElementById(id);
+      if (el('canary-codex-workspace')) el('canary-codex-workspace').innerText = codex.cwd || codex.workspace || data.discovered_identities?.workspace || '-';
+      if (el('canary-codex-thread')) el('canary-codex-thread').innerText = codex.thread_id || '-';
+      if (el('canary-codex-title')) el('canary-codex-title').innerText = codex.title || '-';
+      if (el('canary-codex-file')) el('canary-codex-file').innerText = codex.session_file_path || '-';
+      if (el('canary-codex-status')) el('canary-codex-status').innerText = codex.status || '-';
+
+      if (el('canary-chatgpt-profile')) el('canary-chatgpt-profile').innerText = chatgpt.profile_dir || data.discovered_identities?.browser_profile || '-';
+      if (el('canary-chatgpt-cdp')) el('canary-chatgpt-cdp').innerText = chatgpt.cdp_url || data.discovered_identities?.cdp_url || '-';
+      if (el('canary-chatgpt-url')) el('canary-chatgpt-url').innerText = chatgpt.conversation_url || '-';
+      if (el('canary-chatgpt-convid')) el('canary-chatgpt-convid').innerText = chatgpt.conversation_id || '-';
+      if (el('canary-chatgpt-status')) el('canary-chatgpt-status').innerText = chatgpt.status || '-';
+
+      if (el('canary-cli-path')) el('canary-cli-path').innerText = cli.cli_path || data.discovered_identities?.cli_path || '-';
+      if (el('canary-cli-capability')) el('canary-cli-capability').innerText = cli.status === 'verified' ? 'Verified (--thread, --message, -C)' : (cli.status || '-');
+
+      if (el('canary-preflight-verdict')) el('canary-preflight-verdict').innerText = verdict;
+      if (el('canary-preflight-stage')) el('canary-preflight-stage').innerText = data.stage || '-';
+      if (el('canary-preflight-error-code')) el('canary-preflight-error-code').innerText = data.error_code || '-';
+      if (el('canary-preflight-blocker')) {
+        if (data.blocker) {
+          el('canary-preflight-blocker').innerText = data.blocker;
+        } else if (verdict === 'CANARY_BOOTSTRAP_BLOCKED') {
+          el('canary-preflight-blocker').innerText = 'Bootstrap blocked without explicit reason';
+        } else {
+          el('canary-preflight-blocker').innerText = 'None';
+        }
+      }
+      if (el('canary-preflight-config')) el('canary-preflight-config').innerText = data.config_path || '-';
+    }
+
+    refreshCanaryBootstrap();
+    setInterval(refreshCanaryBootstrap, 10000);
+
+    ['codex-thread-id', 'codex-repo', 'chatgpt-conv-url'].forEach(id => {
+      const inputEl = document.getElementById(id);
+      if (inputEl) {
+        inputEl.addEventListener('input', handleTargetInputModification);
+        inputEl.addEventListener('change', handleTargetInputModification);
+      }
+    });
   </script>
 </body>
 </html>

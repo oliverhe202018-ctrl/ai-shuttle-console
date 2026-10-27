@@ -1,0 +1,165 @@
+{
+  "phase": "Phase 2.1 — Live Browser Connection & Message Reconciliation",
+  "executed_at": "2026-10-25T23:32:00+08:00",
+  "test_command": ".venv/Scripts/python.exe -m pytest tests/test_shuttle_console.py tests/test_phase2_observation_and_reconciliation.py -v -o asyncio_mode=auto",
+  "exit_code": 0,
+  "summary": {
+    "total": 22,
+    "passed": 22,
+    "failed": 0,
+    "skipped": 0,
+    "duration_seconds": 7.57
+  },
+  "tests": [
+    {
+      "nodeid": "tests/test_phase2_observation_and_reconciliation.py::test_codex_identity_matching_and_reconciliation",
+      "status": "PASSED",
+      "scope": "Phase 2 Codex observer identity matching & event flow"
+    },
+    {
+      "nodeid": "tests/test_phase2_observation_and_reconciliation.py::test_codex_rejects_mismatched_cwd_and_unrelated_session",
+      "status": "PASSED",
+      "scope": "Phase 2 Codex CWD and thread isolation"
+    },
+    {
+      "nodeid": "tests/test_phase2_observation_and_reconciliation.py::test_codex_turn_recency_and_in_progress_state",
+      "status": "PASSED",
+      "scope": "Phase 2 Turn recency and in-progress turn defense"
+    },
+    {
+      "nodeid": "tests/test_phase2_observation_and_reconciliation.py::test_chatgpt_observer_url_binding_and_rejection",
+      "status": "PASSED",
+      "scope": "Phase 2 ChatGPT exact URL and conversation ID binding"
+    },
+    {
+      "nodeid": "tests/test_phase2_observation_and_reconciliation.py::test_chatgpt_error_placeholder_defense",
+      "status": "PASSED",
+      "scope": "Phase 2 '无法加载此回复' & error placeholder defense"
+    },
+    {
+      "nodeid": "tests/test_phase2_observation_and_reconciliation.py::test_chatgpt_prompt_extraction_with_provenance",
+      "status": "PASSED",
+      "scope": "Phase 2 Canvas/Code block/Markdown prompt extraction hierarchy"
+    },
+    {
+      "nodeid": "tests/test_phase2_observation_and_reconciliation.py::test_sqlite_observations_and_extractions_persistence",
+      "status": "PASSED",
+      "scope": "Phase 2 SQLite observations & prompt_extractions persistence"
+    },
+    {
+      "nodeid": "tests/test_phase2_observation_and_reconciliation.py::test_rejection_of_stale_prompt_file_and_restart_invariance",
+      "status": "PASSED",
+      "scope": "Phase 2 Stale prompt file rejection & restart recovery invariance"
+    },
+    {
+      "nodeid": "tests/test_phase2_observation_and_reconciliation.py::test_reconciliation_api_endpoint",
+      "status": "PASSED",
+      "scope": "Phase 2 /api/reconciliation audit endpoint"
+    },
+    {
+      "nodeid": "tests/test_phase2_observation_and_reconciliation.py::test_cross_source_iteration_matching_and_mismatch_defense",
+      "status": "PASSED",
+      "scope": "Phase 2.1 Gate 4 Cross-source iteration pairing & MISMATCH detection"
+    },
+    {
+      "nodeid": "tests/test_phase2_observation_and_reconciliation.py::test_live_codex_target_session_verification",
+      "status": "PASSED",
+      "scope": "Phase 2 Live host verification against active Codex session file"
+    },
+    {
+      "nodeid": "tests/test_phase2_observation_and_reconciliation.py::test_api_chatgpt_and_codex_observation_endpoints",
+      "status": "PASSED",
+      "scope": "Phase 2 FastAPI observation endpoints & state transitions"
+    },
+    {
+      "nodeid": "tests/test_shuttle_console.py::test_1_configuration_validation_and_persistence",
+      "status": "PASSED",
+      "scope": "Phase 1 Baseline: Configuration validation & persistence"
+    },
+    {
+      "nodeid": "tests/test_shuttle_console.py::test_2_checkpoint_persistence_and_restart_recovery",
+      "status": "PASSED",
+      "scope": "Phase 1 Baseline: Checkpoint recovery on restart"
+    },
+    {
+      "nodeid": "tests/test_shuttle_console.py::test_3_valid_and_invalid_state_transitions",
+      "status": "PASSED",
+      "scope": "Phase 1 Baseline: State machine valid/invalid transitions"
+    },
+    {
+      "nodeid": "tests/test_shuttle_console.py::test_4_duplicate_transfer_detection",
+      "status": "PASSED",
+      "scope": "Phase 1 Baseline: Duplicate transfer detection by hash"
+    },
+    {
+      "nodeid": "tests/test_shuttle_console.py::test_5_message_hashing",
+      "status": "PASSED",
+      "scope": "Phase 1 Baseline: SHA-256 message hashing"
+    },
+    {
+      "nodeid": "tests/test_shuttle_console.py::test_6_correct_thread_identity_matching_and_jsonl_parsing",
+      "status": "PASSED",
+      "scope": "Phase 1 Baseline: Thread identity matching & basic JSONL reading"
+    },
+    {
+      "nodeid": "tests/test_shuttle_console.py::test_7_browser_blocked_and_error_states",
+      "status": "PASSED",
+      "scope": "Phase 1 Baseline: Browser blocked & interstitial states"
+    },
+    {
+      "nodeid": "tests/test_shuttle_console.py::test_8_refusal_to_retry_unknown_delivery_outcome",
+      "status": "PASSED",
+      "scope": "Phase 1 Baseline: Refusal to retry unknown delivery outcome"
+    },
+    {
+      "nodeid": "tests/test_shuttle_console.py::test_9_no_real_external_side_effects",
+      "status": "PASSED",
+      "scope": "Phase 1 Baseline: Zero real external side effects"
+    },
+    {
+      "nodeid": "tests/test_shuttle_console.py::test_10_api_endpoints_integration",
+      "status": "PASSED",
+      "scope": "Phase 1 Baseline: API endpoints integration"
+    }
+  ],
+  "live_verification_records": {
+    "codex": {
+      "target_thread_id": "00000000-0000-0000-0000-000000000001",
+      "target_project_path": "D:/workspace/production-repo",
+      "target_title": "重置跑胡子手机指导优先级",
+      "session_file": "C:/Users/<USER>/.codex/sessions/2026/10/25/rollout-2026-10-25T08-52-06-00000000-0000-0000-0000-000000000001.jsonl",
+      "total_lines": 5575,
+      "user_turns": 10,
+      "assistant_turns": 13,
+      "latest_turn_id": "01a1739b-35d5-7483-a165-0ffa95aa1105",
+      "latest_user_line": 5426,
+      "latest_assistant_line": 5566,
+      "is_completed": true,
+      "is_in_progress": false,
+      "content_hash": "76f41fe3d0ef49e4540157c50b92fff5abfcf7248f18be4684e7847df8c3ac3d",
+      "relevance_audit": {
+        "status": "AUTHENTIC_CURRENT_ITERATION",
+        "iteration_theme": "GOAL A — ENDGAME CONVERSION & EXACT LIVE-OUT VALUE EXPERIMENT",
+        "turn_user_prompt_source": "C:\\Users\\<USER>\\.codex\\attachments\\beb625c7-0fa9-4540-a51c-7e8a51465495\\已粘贴的文本.txt",
+        "preview_snippet": "# CONTEXT CHECKPOINT: Goal A Endgame Conversion & Exact Live-Out Value Experiment\n\n## 1. Current Progress and Key Decisions Made\n- Priority & Environment Lock: Focus strictly locked on Goal A..."
+      },
+      "verified_status": "VERIFIED_ACCESSIBLE"
+    },
+    "chatgpt": {
+      "target_url": "https://chatgpt.com/g/g-p-example/c/00000000-0000-0000-0000-000000000002",
+      "expected_gpt_id": "g-p-example",
+      "expected_conversation_id": "00000000-0000-0000-0000-000000000002",
+      "profile_dir": "D:/workspace/production-repo/.supervisor/chatgpt-profile",
+      "cdp_url": "http://127.0.0.1:9222",
+      "live_probe_result": "CDP probe connection refused: <urlopen error [WinError 10061] 由于目标计算机积极拒绝，无法连接。> / Get-NetTCPConnection local port 9222 not listening",
+      "browser_process_check": "No msedge.exe process currently listening on port 9222",
+      "adapter_status": "READY_AND_VERIFIED_IN_TESTS",
+      "verified_status": "CHATGPT_BLOCKED"
+    },
+    "reconciliation": {
+      "match_status": "UNVERIFIED_CHATGPT",
+      "transfer_eligible": false,
+      "ineligibility_reason": "ChatGPT live observer is blocked: 127.0.0.1:9222 not reachable. Operator must launch Edge with --remote-debugging-port=9222"
+    }
+  }
+}

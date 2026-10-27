@@ -1,7 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.class
 *.so
 .Python
 build/
@@ -20,6 +20,7 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.pytest_cache/
 
 # Virtual Environment
 .venv/
@@ -29,17 +30,26 @@ ENV/
 
 # Database & Runtime State
 *.db
-*.sqlite3
+*.db-journal
 *.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
 data/
 runtime/
 logs/
 *.log
 
-# Browser Profiles & Cache
+# Session & Rollout Dumps
+*.jsonl
+
+# Browser Profiles, Credentials & Cache
 chatgpt-profile/
+.canary-chatgpt-profile/
 .supervisor/
 *.crx
+*profile*/
+User Data/
 
 # OS & IDE
 .DS_Store
@@ -49,7 +59,36 @@ Thumbs.db
 *.swp
 *~
 
-# Secrets & Environment variables
+# Secrets, Tokens & Environment variables
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.token
+*.cert
+*.pfx
+*.cookie*
+cookies/
+
+# Local Configurations (allow example configs)
+config.json
+config.local*.json
+config.canary.local*.json
+canary_workspace/
+
+# Ad-hoc Scratch & Patching Scripts (preserve execute_live_canary_round*.py)
+scripts/patch_*
+scripts/inspect_*
+scripts/search_*
+scripts/find_*
+scripts/dump_*
+scripts/check_*
+scripts/cleanup_*
+scripts/fix_*
+scripts/reconcile_*
+scripts/prepare_*
+scripts/print_*
+scripts/list_*
+scripts/test_*
+scripts/verify_*

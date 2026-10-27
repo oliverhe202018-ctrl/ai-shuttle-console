@@ -65,6 +65,22 @@ Open your browser at:
 
 ---
 
+## Windows One-Click Startup
+
+For isolated Canary operation on Windows:
+
+1. **Double-click Desktop `AI Shuttle Canary`** (or run `Start AI Shuttle Canary.cmd`).
+2. **Configuration & Port Verification**: The launcher verifies `.venv`, `run.py`, and `config.canary.local.20261026-07.json`, then verifies port `8765` safety. If port `8765` belongs to an unexpected or production process, it fails closed without killing it.
+3. **Browser Opens Automatically**: A dedicated visible console window hosts runtime logs; the launcher polls `http://127.0.0.1:8765/api/state` until ready, and automatically launches `http://127.0.0.1:8765` in your default browser. If already running, it brings up the browser immediately without duplicate instances.
+4. **Close / Stop Procedure**: Press `Ctrl+C` or close the dedicated console window, or run `powershell -ExecutionPolicy Bypass -File .\stop-canary-console.ps1` to stop the verified Canary server process safely and free port 8765.
+
+To install or update the Desktop shortcut idempotently:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-desktop-shortcut.ps1
+```
+
+---
+
 ## Configuration Reference (`config.example.json`)
 
 ```json
@@ -115,3 +131,4 @@ Open your browser at:
 | `MockChatGPTMessageSender` | **MOCKED** | Simulates report submission; catches indeterminate errors |
 | `StandardPromptExtractor` | **REAL** | Parses canvas, markdown blocks, and governance prompts |
 | `ShuttleStateMachine` | **REAL (PRODUCTION)** | SQLite persistent state engine with monotonic transition guards |
+

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head><title>ChatGPT</title></head>
+<body>
+<div data-app-shell-focus-area="main">
+  <div class="thread-scroll-container">
+    <div data-turn-key="turn-uuid-002">
+      <div data-content-search-turn-key="fallback-turn-1">
+        <div data-chatgpt-search-unit-key="fallback-turn-1:0:user" data-chatgpt-search-message-ids="user-msg-002">
+          <div data-content-search-unit-key="fallback-turn-1:0:user">
+            <div data-user-message-bubble="true">
+              <div>Generate live streaming analysis.</div>
+            </div>
+            <div class="turn-action-controls">
+              <button aria-label="Copy message">Copy message</button>
+            </div>
+          </div>
+        </div>
+        <div data-content-search-unit-key="fallback-turn-1:1:assistant" data-chatgpt-search-unit-key="fallback-turn-1:1:assistant" data-chatgpt-search-message-ids="asst-msg-002">
+          <h4 class="sr-only" data-conversation-role="assistant">ChatGPT said:</h4>
+          <span class="cadencedShimmer">Thinking</span>
+          <div data-chatgpt-selection-message-id="asst-msg-002">
+            <div data-markdown-animated="" data-markdown-text-style="assistant-message" class="MarkdownRoot-rZKhxa">
+              <p>Analyzing the options in real time...</p>
+            </div>
+          </div>
+        </div>
+        <!-- Notice: Assistant turn action controls are NOT rendered yet while streaming -->
+      </div>
+    </div>
+  </div>
+  <form data-composer-placement="thread" data-chatgpt-composer="" data-thread-find-composer="true">
+    <div contenteditable="true" role="textbox" aria-label="Ask ChatGPT" class="ProseMirror">
+      <p></p>
+    </div>
+    <button data-testid="stop-button" aria-label="Stop">Stop</button>
+  </form>
+</div>
+</body>
+</html>

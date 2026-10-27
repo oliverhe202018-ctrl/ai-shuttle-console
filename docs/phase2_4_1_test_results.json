@@ -1,0 +1,173 @@
+{
+  "phase": "2.4.1",
+  "date": "2026-10-26 Asia/Shanghai",
+  "live_transfers_performed": 0,
+  "readiness": "STOP_MANUAL_TARGET_SETUP_REQUIRED",
+  "baseline": {
+    "command": ".venv/Scripts/python.exe -m pytest -q -o asyncio_mode=auto",
+    "passed": 65,
+    "exit_code": 0,
+    "seconds": 432.41
+  },
+  "initial_default_pytest": {
+    "passed": 55,
+    "errors": 10,
+    "exit_code": 1,
+    "cause": "Async fixture under strict mode; pytest.ini now selects auto"
+  },
+  "initial_targeted_red": {
+    "passed": 3,
+    "failed": 13,
+    "exit_code": 1
+  },
+  "final_validation": "PASSED_AUTOMATED_PREFLIGHT_LIVE_NOT_RUN",
+  "configuration": {
+    "selection": "run.py --canary --config <explicit file>",
+    "state": "runtime/explicit-config/<sha256(abs-config-path)[:16]>/state.db",
+    "fallback": false,
+    "bind": "127.0.0.1:8765"
+  },
+  "manual_prerequisites": [
+    "Real disposable Codex thread UUID, session header and index",
+    "Real dedicated ChatGPT conversation URL/UUID and isolated browser profile",
+    "Update CLI path to existing executable",
+    "Pass read-only --check before live operator action",
+    "Actual CLI receipt output/event format has not been exercised; ambiguous output requires manual reconciliation"
+  ],
+  "files_touched_by_this_repair": [
+    ".gitignore",
+    "README.md",
+    "app/adapters.py",
+    "app/database.py",
+    "app/main.py",
+    "app/models.py",
+    "app/templates/index.html",
+    "run.py",
+    "config.canary.example.json",
+    "app/canary.py",
+    "pytest.ini",
+    "tests/test_phase2_4_1_preflight.py",
+    "docs/phase2_4_1_canary_preflight.md",
+    "docs/phase2_4_1_test_results.json"
+  ],
+  "vault": "Retrieval returned no relevant project-specific evidence; findings use local code and read-only host inspection.",
+  "targeted": {
+    "command": ".venv/Scripts/python.exe -m pytest tests/test_phase2_4_1_preflight.py -x -q --tb=short --junitxml=runtime/preflight-audit/targeted-final.xml",
+    "passed": 58,
+    "failed": 0,
+    "exit_code": 0,
+    "seconds": 425.33,
+    "tests": 58,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "historical_fixture_iteration": {
+    "passed": 45,
+    "failed": 3,
+    "exit_code": 1,
+    "cause": "Offline fixtures omitted completion controls and skipped legal delivery state transitions; fixtures corrected."
+  },
+  "obsolete_runs_cancelled": 3,
+  "workspace": "D:/project/ai-shuttle-console",
+  "server_listener_during_audit": "No listener on 8765 observed; no server started; launcher bind asserted in tests.",
+  "placeholder_preflight": {
+    "command": ".venv/Scripts/python.exe run.py --canary --config config.canary.example.json --check",
+    "exit_code": 1,
+    "result": "Placeholder target identifiers are forbidden for live transfer; rejected before any transfer."
+  },
+  "static_checks": {
+    "python_compileall_exit_code": 0,
+    "dashboard_javascript_node_check_exit_code": 0,
+    "git_diff_check_exit_code": 0
+  },
+  "full_suite": {
+    "command": ".venv/Scripts/python.exe -m pytest -q --tb=short --basetemp=runtime/preflight-audit/final-tests --junitxml=runtime/preflight-audit/full-suite-final.xml",
+    "tests": 123,
+    "passed": 123,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "exit_code": 0,
+    "seconds": 867.24,
+    "existing_tests": 65,
+    "new_tests": 58
+  },
+  "contract": {
+    "request_nonce_generated_by_server": true,
+    "nonce_in_request_and_expected_prompt": true,
+    "marked_canary_prompt_accepted_in_regressions": true,
+    "ordinary_answer_rejected": true,
+    "missing_or_mismatched_nonce_rejected": true,
+    "historical_reply_rejected": true,
+    "production_fallback_rejected": true,
+    "production_extraction_rules_preserved": true,
+    "actual_chatgpt_response_observed": false
+  },
+  "queue_semantics": {
+    "destination": "Exact verified UUID and resolved disposable workspace",
+    "receipt": "Transport acceptance only; no fabricated receipt",
+    "completion": "Separately observed current user prompt, turn, explicit completion, exact nonce acknowledgement, and post-submission boundary",
+    "ambiguous_status": "DELIVERY_OUTCOME_UNKNOWN",
+    "automatic_retry": false,
+    "interrupted_sending_recovered_as_unknown": true,
+    "authorization_destination_exact": true,
+    "authorization_consumption_atomic": true
+  },
+  "limitations": [
+    "Real canary identities and browser/session setup remain manual prerequisites.",
+    "Installed CLI help supports queue input flags; its live receipt output format has not been exercised. Unrecognized output becomes unknown and requires manual reconciliation.",
+    "Legacy general reconciliation panel retains Phase 2 keyword matching; use dedicated canary preflight/completion endpoints."
+  ],
+  "initial_wrong_runner": {
+    "command": "python -m unittest discover -s tests -v",
+    "exit_code": 1,
+    "import_errors": 4,
+    "cause": "Global Python 3.14 lacked project dependencies; all authoritative tests used the existing project virtual environment and pytest."
+  },
+  "baseline_git_status_short": " M .gitignore\n M README.md\n M app/adapters.py\n M app/database.py\n M app/main.py\n M app/models.py\n M app/templates/index.html\n M requirements.txt\n?? app/chatgpt_dom.py\n?? config.canary.example.json\n?? docs/phase2_real_observation_report.md\n?? docs/phase2_test_results.json\n?? tests/fixtures/\n?? tests/test_phase2_2_chatgpt_layout_compatibility.py\n?? tests/test_phase2_3_bidirectional_transfer.py\n?? tests/test_phase2_4_canary_acceptance.py\n?? tests/test_phase2_observation_and_reconciliation.py\n",
+  "git_status_command": "git --no-optional-locks status --short --untracked-files=all",
+  "git_status": " M .gitignore\n M README.md\n M app/adapters.py\n M app/database.py\n M app/main.py\n M app/models.py\n M app/templates/index.html\n M requirements.txt\n M run.py\n?? app/canary.py\n?? app/chatgpt_dom.py\n?? config.canary.example.json\n?? docs/phase2_4_1_canary_preflight.md\n?? docs/phase2_4_1_test_results.json\n?? docs/phase2_real_observation_report.md\n?? docs/phase2_test_results.json\n?? pytest.ini\n?? tests/fixtures/chatgpt/copy_buttons_scoped.html\n?? tests/fixtures/chatgpt/current_completed.html\n?? tests/fixtures/chatgpt/current_streaming.html\n?? tests/fixtures/chatgpt/error_placeholder.html\n?? tests/fixtures/chatgpt/family_chatgpt_search_only.html\n?? tests/fixtures/chatgpt/family_content_search_only.html\n?? tests/fixtures/chatgpt/legacy_completed.html\n?? tests/fixtures/chatgpt/multiline_composer.html\n?? tests/fixtures/chatgpt/multiple_writing_blocks.html\n?? tests/fixtures/chatgpt/stale_reply_user_turn.html\n?? tests/fixtures/chatgpt/wrong_url_unresolved.html\n?? tests/test_phase2_2_chatgpt_layout_compatibility.py\n?? tests/test_phase2_3_bidirectional_transfer.py\n?? tests/test_phase2_4_1_preflight.py\n?? tests/test_phase2_4_canary_acceptance.py\n?? tests/test_phase2_observation_and_reconciliation.py\n",
+  "branch": "master",
+  "files_touched_absolute": [
+    "D:\\project\\ai-shuttle-console\\.gitignore",
+    "D:\\project\\ai-shuttle-console\\README.md",
+    "D:\\project\\ai-shuttle-console\\app\\adapters.py",
+    "D:\\project\\ai-shuttle-console\\app\\database.py",
+    "D:\\project\\ai-shuttle-console\\app\\main.py",
+    "D:\\project\\ai-shuttle-console\\app\\models.py",
+    "D:\\project\\ai-shuttle-console\\app\\templates\\index.html",
+    "D:\\project\\ai-shuttle-console\\run.py",
+    "D:\\project\\ai-shuttle-console\\config.canary.example.json",
+    "D:\\project\\ai-shuttle-console\\app\\canary.py",
+    "D:\\project\\ai-shuttle-console\\pytest.ini",
+    "D:\\project\\ai-shuttle-console\\tests\\test_phase2_4_1_preflight.py",
+    "D:\\project\\ai-shuttle-console\\docs\\phase2_4_1_canary_preflight.md",
+    "D:\\project\\ai-shuttle-console\\docs\\phase2_4_1_test_results.json"
+  ],
+  "source_file_sha256": {
+    ".gitignore": "9d03db5e38b5f9f4a32a50b36646bad9eea14ce4728c3c9b5eb379c37c540731",
+    "README.md": "7817b4fc77301c56c2dd7560e5556dc42a73e27b5a9881de1a06568300b73cac",
+    "app/adapters.py": "ae51ee60f08e7e3593ff28bb688da7708e87f3a7814028cb2e41ea9c9b3cfe14",
+    "app/database.py": "d829356920474ec6d47255512f6ef1f5dde5484dde59e393f01a00e809ba0346",
+    "app/main.py": "2215f3ededc53ce08f640fd5545977cb8b9886f7e934c24ac922ad0914091052",
+    "app/models.py": "13b87caf5629f954040a899bcc71b6022a7222b35f865d25264b3a8f35836f99",
+    "app/templates/index.html": "c4ea85630061a71e24009f355c8579022bdd42c72f987de83791da82b2188253",
+    "run.py": "021cbf6a58e8a01f2e8eb461853337d4b03f3977d536a468d42e602b0d8d16a9",
+    "config.canary.example.json": "50ad4a83adca208c4e188f965ae6b31f8554fbbd455921c4389e291382464ea9",
+    "app/canary.py": "86c7bf0e50b23819c08d73a071010e0d8023d7ee5a5972a2fe06be1e192092b0",
+    "pytest.ini": "e28a989e765f6f1fc37e02fb00a351f56391f749cafcd3f93057abbfb17ba26b",
+    "tests/test_phase2_4_1_preflight.py": "61900b567f806624b80c6340b4e0e5f2f0c321b633d6c35710b8051b0200990d"
+  },
+  "protected_workspace": {
+    "path": "D:\\workspace\\example-repo",
+    "writes_by_this_task": 0,
+    "existing_changed_or_untracked_files_hashed": 71,
+    "hashes_changed_since_snapshot": [],
+    "status_unchanged": false,
+    "new_status_entries_during_audit": [
+      "?? reports/goal_a_phase1_1_forensic_audit.md"
+    ],
+    "note": "Concurrent status additions are reported; no clean-production claim is made."
+  }
+}

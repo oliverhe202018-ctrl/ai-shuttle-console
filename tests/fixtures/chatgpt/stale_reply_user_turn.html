@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head><title>ChatGPT</title></head>
+<body>
+<div>
+  <!-- Turn 1: Completed assistant response -->
+  <div data-turn-key="turn-stale-1">
+    <div data-content-search-unit-key="turn-stale-1:user">
+      <div data-user-message-bubble="true">Previous user question</div>
+    </div>
+    <div data-content-search-unit-key="turn-stale-1:assistant">
+      <div data-markdown-text-style="assistant-message">Previous assistant answer</div>
+      <div class="turn-action-controls">
+        <button aria-label="Copy">Copy</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Turn 2: New user question sent, waiting for answer -->
+  <div data-turn-key="turn-stale-2">
+    <div data-content-search-unit-key="turn-stale-2:user">
+      <div data-user-message-bubble="true">New user question sent just now!</div>
+    </div>
+  </div>
+
+  <form data-chatgpt-composer="">
+    <div contenteditable="true" role="textbox"></div>
+  </form>
+</div>
+</body>
+</html>

@@ -5,6 +5,9 @@ Guarantees typed transitions, monotonic check-pointing, duplicate prevention, an
 from typing import Optional, Tuple
 from app.database import Database
 from app.models import (
+    TransferRecord,
+    TransferAuthorization,
+    TransferStatus,
     AppConfig,
     CheckpointRecord,
     ShuttleStage,
@@ -65,10 +68,31 @@ class ShuttleStateMachine:
         transfer_status: Optional[str] = None,
         failure_details: Optional[str] = None,
         force: bool = False,
+        clear_payload: bool = False,
     ) -> CheckpointRecord:
         """
         Atomically validate and persist transition before side-effects.
         """
+        if self.config and self.config.canary_mode and target_stage in (ShuttleStage.REPORT_PREVIEW, ShuttleStage.PROMPT_PREVIEW):
+            from app.runtime_state import transfer_error
+            direction = "codex_to_chatgpt" if target_stage == ShuttleStage.REPORT_PREVIEW else "chatgpt_to_codex"
+            prepared = [t for t in await self.db.get_all_transfers(limit=-1)
+                        if t.direction == direction and t.status == "prepared"]
+            error = transfer_error(prepared[0] if len(prepared) == 1 else None, self.config, direction)
+            if error:
+                raise InvalidTransitionError(f"TRANSFER_STATE_INCONSISTENT: {error}")
+
+        if self.config and self.config.canary_mode and self.stage == ShuttleStage.REPORT_PREVIEW and target_stage != ShuttleStage.CHATGPT_SEND_PENDING:
+            prepared = [t for t in await self.db.get_all_transfers(limit=-1)
+                        if t.direction == "codex_to_chatgpt" and t.status == "prepared"]
+            if prepared:
+                raise InvalidTransitionError("TRANSFER_STATE_INCONSISTENT: Cannot leave REPORT_PREVIEW while a prepared transfer is active; cancel the transfer first")
+
+        if self.config and self.config.canary_mode and self.stage == ShuttleStage.PROMPT_PREVIEW and target_stage != ShuttleStage.CODEX_QUEUE_PENDING:
+            prepared = [t for t in await self.db.get_all_transfers(limit=-1)
+                        if t.direction == "chatgpt_to_codex" and t.status == "prepared"]
+            if prepared:
+                raise InvalidTransitionError("TRANSFER_STATE_INCONSISTENT: Cannot leave PROMPT_PREVIEW while a prepared transfer is active; cancel the transfer first")
         if not force and not self.can_transition_to(target_stage):
             msg = f"Invalid state transition requested: {self.stage} -> {target_stage}"
             await self.db.log_event(
@@ -80,15 +104,18 @@ class ShuttleStateMachine:
             raise InvalidTransitionError(msg)
 
         cur = self.current_checkpoint
+        inherited_failure = cur.failure_details if cur else None
+        if target_stage not in (ShuttleStage.DELIVERY_OUTCOME_UNKNOWN, ShuttleStage.ERROR, ShuttleStage.HUMAN_ACTION_REQUIRED):
+            inherited_failure = None
         new_record = CheckpointRecord(
             stage=target_stage,
             iteration_id=iteration_id if iteration_id is not None else (cur.iteration_id if cur else 0),
             source_identifier=source_id if source_id is not None else (cur.source_identifier if cur else ""),
             destination_identifier=dest_id if dest_id is not None else (cur.destination_identifier if cur else ""),
-            content_hash=content_hash if content_hash is not None else (cur.content_hash if cur else None),
-            payload_preview=payload_preview if payload_preview is not None else (cur.payload_preview if cur else None),
+            content_hash=None if clear_payload else (content_hash if content_hash is not None else (cur.content_hash if cur else None)),
+            payload_preview=None if clear_payload else (payload_preview if payload_preview is not None else (cur.payload_preview if cur else None)),
             transfer_status=transfer_status if transfer_status is not None else (cur.transfer_status if cur else "pending"),
-            failure_details=failure_details if failure_details is not None else (cur.failure_details if cur else None),
+            failure_details=None if clear_payload else (failure_details if failure_details is not None else inherited_failure),
         )
 
         saved = await self.db.save_checkpoint(new_record)
@@ -112,3 +139,45 @@ class ShuttleStateMachine:
             if t.get("status") in ("sent", "confirmed"):
                 return True, f"Duplicate detected: transfer ID {t['id']} already sent with hash {content_hash[:8]}"
         return False, None
+
+    async def prepare_transfer_atomic(
+        self,
+        transfer: TransferRecord,
+        auth: TransferAuthorization,
+        target_stage: ShuttleStage,
+    ) -> Tuple[TransferRecord, TransferAuthorization, CheckpointRecord]:
+        """
+        Validate transition and atomically persist transfer, authorization, checkpoint,
+        and state transition in one database transaction.
+        """
+        if not self.can_transition_to(target_stage):
+            msg = f"Invalid state transition requested: {self.stage} -> {target_stage}"
+            await self.db.log_event(
+                event_type="TRANSITION_REJECTED",
+                stage=self.stage,
+                severity="warning",
+                message=msg,
+            )
+            raise InvalidTransitionError(msg)
+
+        cur = self.current_checkpoint
+        new_checkpoint = CheckpointRecord(
+            stage=target_stage,
+            iteration_id=transfer.iteration_id,
+            source_identifier=transfer.source_identifier or (cur.source_identifier if cur else ""),
+            destination_identifier=transfer.destination_identifier or (cur.destination_identifier if cur else ""),
+            content_hash=transfer.content_hash,
+            payload_preview=transfer.payload_preview,
+            transfer_status=TransferStatus.PREPARED.value,
+        )
+
+        event_msg = f"Transitioned from {cur.stage if cur else 'NONE'} to {target_stage}"
+        t, a, cp = await self.db.persist_prepared_transfer_atomic(
+            transfer=transfer,
+            auth=auth,
+            checkpoint=new_checkpoint,
+            event_message=event_msg,
+        )
+        self.current_checkpoint = cp
+        return t, a, cp
+

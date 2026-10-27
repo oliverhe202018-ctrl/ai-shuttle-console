@@ -1,0 +1,36 @@
+{
+  "canary_mode": true,
+  "codex": {
+    "repo_path": "D:/workspace/canary_workspace",
+    "expected_branch": "master",
+    "cli_path": "C:/Users/<USER>/AppData/Local/OpenAI/Codex/bin/codex.exe",
+    "thread_id": "00000000-canary-0000-0000-000000000001",
+    "thread_title": "Canary Test Thread (Isolated)",
+    "sessions_dir": "C:/Users/<USER>/.codex/sessions",
+    "session_index_path": "C:/Users/<USER>/.codex/session_index.jsonl",
+    "integration_mode": "cli_queue"
+  },
+  "chatgpt": {
+    "browser_type": "msedge",
+    "profile_dir": "D:/workspace/.canary-chatgpt-profile",
+    "conversation_url": "https://chatgpt.com/c/00000000-0000-0000-0000-canarytest001",
+    "expected_gpt_id": null,
+    "expected_conversation_id": "00000000-0000-0000-0000-canarytest001",
+    "browser_readiness": "ready",
+    "human_verification_state": "passed",
+    "cdp_url": "http://127.0.0.1:9222"
+  },
+  "route": {
+    "codex_to_chatgpt_enabled": true,
+    "chatgpt_to_codex_enabled": true,
+    "prompt_extraction_policy": "strict_markdown_blocks",
+    "manual_approval_required": true,
+    "duplicate_detection_policy": "hash_and_prefix_match",
+    "restart_recovery_policy": "resume_latest_checkpoint"
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "log_level": "info"
+  }
+}

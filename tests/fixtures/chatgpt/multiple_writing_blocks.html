@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head><title>ChatGPT</title></head>
+<body>
+<div class="main-layout">
+  <!-- Writing block 1: Canvas Editor -->
+  <div data-testid="canvas-editor" class="canvas-container">
+    <h3>Canvas Document</h3>
+    <div contenteditable="true" role="textbox" aria-label="Canvas Document Content" class="canvas-editable">
+      This is text in a canvas writing block, not the chat composer.
+    </div>
+    <button aria-label="Copy">Copy</button>
+  </div>
+
+  <!-- Writing block 2: Inline Artifact Editor -->
+  <div class="writing-block" data-writing-block="true">
+    <div contenteditable="true" class="artifact-editable">
+      Another editable document block here.
+    </div>
+  </div>
+
+  <!-- Conversation turn -->
+  <div data-turn-key="turn-wb-1">
+    <div data-chatgpt-search-unit-key="turn-wb-1:assistant">
+      <div data-markdown-text-style="assistant-message">
+        <p>Assistant verified response text.</p>
+      </div>
+      <div class="turn-action-controls">
+        <button aria-label="Copy">Copy</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Genuine message composer -->
+  <form data-chatgpt-composer="" data-thread-find-composer="true">
+    <div contenteditable="true" role="textbox" aria-label="Ask ChatGPT" class="ProseMirror">
+      <p>Genuine chat composer content</p>
+    </div>
+    <button data-testid="send-button">Send</button>
+  </form>
+</div>
+</body>
+</html>

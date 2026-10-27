@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head><title>ChatGPT</title></head>
+<body>
+<div>
+  <div data-turn-key="turn-copy-1">
+    <!-- User message with copy button -->
+    <div data-content-search-unit-key="turn-copy-1:user" class="group/user-message">
+      <div data-user-message-bubble="true">User prompt text</div>
+      <button aria-label="Copy message">Copy</button>
+    </div>
+
+    <!-- Assistant message with code block copy button, but NO turn action bar copy button -->
+    <div data-content-search-unit-key="turn-copy-1:assistant">
+      <div data-markdown-text-style="assistant-message">
+        <p>Assistant response with code</p>
+        <pre><button aria-label="Copy code">Copy</button><code>console.log('code');</code></pre>
+      </div>
+      <!-- Note: NO .turn-action-controls button[aria-label="Copy"] -->
+    </div>
+  </div>
+
+  <!-- Canvas writing block with copy button -->
+  <div data-testid="canvas-editor">
+    <button aria-label="Copy">Copy</button>
+  </div>
+
+  <form data-chatgpt-composer="">
+    <div contenteditable="true" role="textbox"></div>
+  </form>
+</div>
+</body>
+</html>

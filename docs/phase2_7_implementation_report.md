@@ -28,7 +28,7 @@ Private configuration: `config.production.shadow.local.json`. Shared protection 
 
 The local CLI, session directory/index, and CDP/profile parameters were discovered from the existing local environment. Exact production thread, canonical cwd, title/index metadata, and a unique rollout matched. The actual repository branch differs from the configured expected branch. CDP is connected, but the exact production conversation is not open; authentication and composer readiness for that page remain unverified.
 
-The repository has a preexisting dirty state. Its branch, HEAD, and status matched the initial read-only implementation snapshot on recheck. Shuttle issued no production queue, resume, task, browser message, or repository mutation.
+The repository has a preexisting dirty state. An initial recheck matched the read-only implementation snapshot, but the final comparison detected a repository change during implementation. The delta is recorded privately as `PRODUCTION_REPOSITORY_CHANGED_DURING_SHADOW` and requires operator review before live acceptance. No cause is assigned to that change. Shuttle issued no production queue, resume, task, browser message, or repository mutation.
 
 Actual identities, paths, payloads, and raw readiness evidence remain in local private files. Public-tree and staged-addition scans showed zero configured private-value matches; no private config or evidence file is tracked.
 
@@ -42,6 +42,6 @@ The synthetic browser UI check passed with zero page-script errors, visible prep
 
 Not run. No live acceptance status is claimed, and Phase 2.7.1 has not begun.
 
-Before live acceptance, the operator must resolve the branch discrepancy, review the recorded preexisting dirty state, open exactly one configured production conversation in the configured authenticated CDP browser, and ensure Codex is idle/completed. Separate live authorization then permits a fresh baseline and exact C2G preview; a further explicit bound operator action authorizes one real C2G send. Observe the new planner response, extract strictly, prepare G2C unchanged if actionable, and stop without queueing.
+Before live acceptance, the operator must resolve the branch discrepancy, review the recorded preexisting dirty state and subsequent repository delta, open exactly one configured production conversation in the configured authenticated CDP browser, and ensure Codex is idle/completed. Separate live authorization then permits a fresh baseline and exact C2G preview; a further explicit bound operator action authorizes one real C2G send. Observe the new planner response, extract strictly, prepare G2C unchanged if actionable, and stop without queueing.
 
 See [the implementation and operator contract](phase2_7_production_shadow.md) for endpoint details. Commit SHA and publication branch are reported with the final delivery.

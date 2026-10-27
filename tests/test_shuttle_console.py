@@ -66,7 +66,7 @@ async def test_1_configuration_validation_and_persistence(test_db):
     config = AppConfig(
         codex=CodexConfig(
             repo_path="D:/workspace/example-repo",
-            expected_branch="codex/run_huzi_mobile_guidance",
+            expected_branch="synthetic-production-branch",
             cli_path="C:/Codex/codex.exe",
             thread_id="00000000-0000-0000-0000-000000000001",
             thread_title="跑胡子指导",

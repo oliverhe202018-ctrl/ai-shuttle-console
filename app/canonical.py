@@ -352,6 +352,7 @@ def classify_chatgpt_delivery(
     baseline_message_ids: Optional[Any] = None,
     baseline_user_index: Optional[int] = None,
     baseline_texts: Optional[Any] = None,
+    infer_nonce: bool = True,
 ) -> Dict[str, Any]:
     """
     Classifies ChatGPT delivery confirmation by checking:
@@ -391,7 +392,7 @@ def classify_chatgpt_delivery(
 
     # 3. Extract nonce if not provided
     nonce_to_check = authorized_nonce
-    if not nonce_to_check:
+    if not nonce_to_check and infer_nonce:
         m_nonce = re.search(r"nonce:\s*([0-9a-f]{32})", expected_message, re.IGNORECASE)
         if not m_nonce:
             m_nonce = re.search(r"\b([0-9a-f]{32})\b", expected_message)

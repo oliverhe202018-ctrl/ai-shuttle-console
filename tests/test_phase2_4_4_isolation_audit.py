@@ -97,10 +97,10 @@ def make_production_config() -> AppConfig:
         canary_mode=False,
         codex=CodexConfig(
             repo_path=str(PRODUCTION_WORKSPACE),
-            expected_branch="codex/run_huzi_mobile_guidance",
+            expected_branch="synthetic-production-branch",
             cli_path="C:/OpenAI/Codex/bin/codex.exe",
             thread_id=PRODUCTION_THREAD,
-            thread_title="重置跑胡子手机指导优先级",
+            thread_title="Synthetic production thread",
             sessions_dir="C:/Users/test/.codex/sessions",
             integration_mode="cli_queue",
         ),

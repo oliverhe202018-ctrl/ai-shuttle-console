@@ -64,6 +64,77 @@
     </div>
   </header>
 
+  {% if config and config.production_shadow_mode %}
+  <section class="card" id="production-shadow-panel" style="border:2px solid #f59e0b;margin-bottom:24px">
+    <h2>Production Shadow Mode <span class="badge badge-warn">PRODUCTION SHADOW</span></h2>
+    <p>This mode can send one real message to the configured ChatGPT production conversation but cannot execute Codex tasks.</p>
+    <p>Auto execution: OFF · G2C queue permission: OFF · C2G manual authorization: REQUIRED</p>
+    <p>Payload rewrite: NONE</p>
+    <p id="shadow-run-status" style="color:var(--warning);font-weight:600">PRODUCTION_SHADOW_NOT_CONFIGURED</p>
+    <pre id="shadow-targets" style="max-height:none">Production configuration not loaded.</pre>
+    <label><input type="checkbox" id="shadow-target-confirm"> I confirm these exact production identities.</label>
+    <div class="btn-group">
+      <button class="btn btn-secondary" onclick="shadowRefresh()">Refresh private evidence</button>
+      <button class="btn" id="shadow-baseline" onclick="shadowAction('baseline')" disabled>Read-only baseline</button>
+      <button class="btn" id="shadow-prepare" onclick="shadowAction('prepare')" disabled>Prepare C2G — do not send</button>
+      <button class="btn btn-danger" id="shadow-authorize" onclick="shadowAction('authorize')" disabled>Authorize exactly one C2G</button>
+      <button class="btn btn-danger" id="shadow-send" onclick="shadowAction('send')" disabled>Send authorized C2G once</button>
+      <button class="btn" id="shadow-observe" onclick="shadowAction('observe')" disabled>Observe planner / prepare G2C for review</button>
+    </div>
+    <pre id="shadow-preview" style="max-height:none">No production transfer prepared.</pre>
+    <details><summary>Private full evidence</summary><pre id="shadow-evidence">No production evidence.</pre></details>
+  </section>
+  <script>
+    let shadowState = null, shadowToken = null;
+    async function shadowRefresh() {
+      try {
+        const response = await fetch('/api/production-shadow/status');
+        shadowState = await response.json();
+        document.getElementById('shadow-targets').textContent = JSON.stringify(shadowState.targets || shadowState, null, 2);
+        const r = shadowState.record;
+        document.getElementById('shadow-run-status').textContent = r ? r.status : (shadowState.configured ? 'PRODUCTION_SHADOW_TARGET_CONFIRMATION_REQUIRED' : 'PRODUCTION_SHADOW_NOT_CONFIGURED');
+        document.getElementById('shadow-preview').textContent = r ? JSON.stringify({
+          status:r.status,source_turn_id:r.source.turn_id,source_assistant_message_id:r.source.assistant_message_id,
+          source_completed_at:r.source.completed_at,destination:r.targets.conversation_url,
+          char_count:r.char_count,sha256:r.payload_hash,config_fingerprint:r.config_fingerprint,
+          repository_head:r.repo_pre.head,preexisting_dirty:r.repo_pre.production_repo_preexisting_dirty_state,
+          payload_preview:r.payload_preview,payload_rewrite:r.payload_rewrite,g2c:r.g2c},null,2) : 'No production transfer prepared.';
+        document.getElementById('shadow-evidence').textContent = JSON.stringify(r || {}, null, 2);
+        for (const step of ['baseline','prepare','authorize','send','observe']) document.getElementById('shadow-'+step).disabled = true;
+        if (shadowState.configured) {
+          const allowed = !r ? 'baseline' : ({'PRODUCTION_SHADOW_BASELINE_VERIFIED':'prepare',
+            'PRODUCTION C2G PREPARED — NOT SENT':'authorize','PRODUCTION_C2G_AUTHORIZED':'send',
+            'PRODUCTION_C2G_DELIVERED':'observe'})[r.status];
+          if (allowed) document.getElementById('shadow-'+allowed).disabled = allowed === 'send' && !shadowToken;
+        }
+      } catch (error) { document.getElementById('shadow-evidence').textContent = String(error); }
+    }
+    async function shadowAction(step) {
+      let body = {};
+      const r = shadowState && shadowState.record;
+      if (step === 'baseline') body = {config_fingerprint:shadowState.targets.config_fingerprint,
+        targets_confirmed:document.getElementById('shadow-target-confirm').checked};
+      if (step === 'authorize') {
+        if (!confirm('Authorize exactly ONE real C2G send for the displayed payload and destination?')) return;
+        body = {operator_confirmed:true,binding:{transfer_id:r.c2g_transfer_id,destination:r.targets.conversation_url,
+          payload_hash:r.payload_hash,source_message_id:r.source.assistant_message_id,source_turn_id:r.source.turn_id,
+          config_fingerprint:r.config_fingerprint,production_shadow_mode:true}};
+      }
+      if (step === 'send') {
+        if (!shadowToken || !confirm('Send the authorized production payload once now?')) return;
+        body = {token:shadowToken}; shadowToken = null;
+      }
+      const response = await fetch('/api/production-shadow/'+step,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const data = await response.json();
+      if (!response.ok) { document.getElementById('shadow-evidence').textContent = JSON.stringify(data,null,2); return; }
+      if (step === 'authorize') shadowToken = data.token;
+      await shadowRefresh();
+    }
+    document.addEventListener('DOMContentLoaded', shadowRefresh);
+  </script>
+  {% endif %}
+  {% if not config or not config.production_shadow_mode %}
+
     <div class="grid">
 
     <div class="card" style="grid-column: 1 / -1; border-color: var(--accent);">
@@ -1283,5 +1354,6 @@
       }
     });
   </script>
+  {% endif %}
 </body>
 </html>

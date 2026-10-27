@@ -58,7 +58,7 @@ async def test_codex_identity_matching_and_reconciliation(temp_dirs):
     """
     thread_id = "00000000-0000-0000-0000-000000000001"
     expected_cwd = "D:/workspace/example-repo"
-    expected_title = "重置跑胡子手机指导优先级"
+    expected_title = "Synthetic production thread"
 
     # Write mock session_index.jsonl
     with open(temp_dirs["session_index"], "w", encoding="utf-8") as f:
@@ -380,10 +380,10 @@ async def test_reconciliation_api_endpoint(temp_dirs):
     cfg = AppConfig(
         codex=CodexConfig(
             repo_path="D:/workspace/example-repo",
-            expected_branch="codex/run_huzi_mobile_guidance",
+            expected_branch="synthetic-production-branch",
             cli_path="C:/dummy/codex.exe",
             thread_id="00000000-0000-0000-0000-000000000001",
-            thread_title="重置跑胡子手机指导优先级",
+            thread_title="Synthetic production thread",
             sessions_dir=str(temp_dirs["codex_sessions"]),
             session_index_path=str(temp_dirs["session_index"]),
         ),
@@ -488,7 +488,7 @@ async def test_live_codex_target_session_verification():
     Direct verification against the actual configured Codex session on the host machine.
     Target Thread: 00000000-0000-0000-0000-000000000001
     Expected CWD: D:/workspace/example-repo
-    Expected Title: 重置跑胡子手机指导优先级
+    Expected Title: Synthetic production thread
     """
     real_sessions_dir = Path.home() / ".codex" / "sessions"
     real_session_index = Path.home() / ".codex" / "session_index.jsonl"
@@ -508,7 +508,7 @@ async def test_live_codex_target_session_verification():
     obs = observer.observe_thread(
         thread_id=thread_id,
         expected_cwd="D:/workspace/example-repo",
-        expected_title="重置跑胡子手机指导优先级",
+        expected_title="Synthetic production thread",
     )
 
     assert obs["metadata_valid"] is True, f"Validation errors: {obs['validation_errors']}"
@@ -540,10 +540,10 @@ async def test_api_chatgpt_and_codex_observation_endpoints(temp_dirs):
     cfg = AppConfig(
         codex=CodexConfig(
             repo_path="D:/workspace/example-repo",
-            expected_branch="codex/run_huzi_mobile_guidance",
+            expected_branch="synthetic-production-branch",
             cli_path="C:/dummy/codex.exe",
             thread_id="00000000-0000-0000-0000-000000000001",
-            thread_title="重置跑胡子手机指导优先级",
+            thread_title="Synthetic production thread",
             sessions_dir=str(temp_dirs["codex_sessions"]),
             session_index_path=str(temp_dirs["session_index"]),
         ),

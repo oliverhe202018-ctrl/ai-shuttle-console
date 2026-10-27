@@ -1955,8 +1955,8 @@ class RealChatGPTMessageSender(IChatGPTMessageSender):
                 return el ? (el.innerText || el.value || '') : '';
             }""", selector)
 
-            norm_rb = read_back.strip().replace("\r\n", "\n")
-            norm_msg = message.strip().replace("\r\n", "\n")
+            norm_rb = read_back if kwargs.get("production_shadow") else read_back.strip().replace("\r\n", "\n")
+            norm_msg = message if kwargs.get("production_shadow") else message.strip().replace("\r\n", "\n")
             if norm_rb != norm_msg or compute_sha256(norm_rb) != content_hash:
                 raise NotSentError("Composer text mismatch: read back content does not match prepared report character-for-character")
 
@@ -1972,7 +1972,7 @@ class RealChatGPTMessageSender(IChatGPTMessageSender):
 
             from app.canonical import classify_chatgpt_delivery, compute_semantic_hash
             authorized_nonce = kwargs.get("nonce")
-            if not authorized_nonce:
+            if not authorized_nonce and not kwargs.get("production_shadow"):
                 m_nonce = re.search(r"nonce:\s*([0-9a-f]{32})", message, re.IGNORECASE)
                 if not m_nonce:
                     m_nonce = re.search(r"\b([0-9a-f]{32})\b", message)
@@ -2011,6 +2011,7 @@ class RealChatGPTMessageSender(IChatGPTMessageSender):
                         baseline_message_ids=baseline_message_ids,
                         baseline_user_index=baseline_user_index,
                         baseline_texts=baseline_texts,
+                        infer_nonce=not kwargs.get("production_shadow", False),
                     )
                     if classification.get("status") == "CHATGPT_DUPLICATE_DELIVERY":
                         raise DeliveryOutcomeUnknownError(
@@ -2475,6 +2476,10 @@ class RealCodexQueueAdapter(ICodexQueueAdapter):
         repo_path: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        if self.db:
+            active_config = await self.db.get_config()
+            if active_config and active_config.production_shadow_mode is True:
+                raise ValueError("PRODUCTION_G2C_QUEUE_FORBIDDEN")
         if not thread_id or not thread_id.strip():
             raise ValueError("Thread ID is required for Codex queue submission")
 

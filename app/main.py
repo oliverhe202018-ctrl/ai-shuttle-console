@@ -95,6 +95,7 @@ transfer_lock = asyncio.Lock()
 
 app_server_manager: Optional[CodexAppServerManager] = None
 auto_coordinator: Optional[AutoModeCoordinator] = None
+production_shadow = None
 
 
 def get_app_server_manager() -> CodexAppServerManager:
@@ -176,11 +177,19 @@ async def current_canary_request():
 async def lifespan(app: FastAPI):
     # Startup
     global db, state_machine, runtime_identity, app_server_manager, auto_coordinator, codex_observer, real_chatgpt_observer, real_chatgpt_sender, real_codex_queue
+    global production_shadow
+    production_shadow = None
     explicit_path = os.environ.get("SHUTTLE_CONFIG")
     require_canary = os.environ.get("SHUTTLE_CANARY") == "1"
     if require_canary and not explicit_path:
         raise ValueError("Canary requires explicit SHUTTLE_CONFIG; fallback forbidden")
     explicit_config = load_explicit_config(Path(explicit_path), canary=require_canary) if explicit_path else None
+    if explicit_config and explicit_config.production_shadow_mode:
+        from app.production_shadow import require_shadow
+        require_shadow(explicit_config)
+        ignored = await asyncio.create_subprocess_exec("git", "check-ignore", "--quiet", str(Path(explicit_path).resolve()), cwd=BASE_DIR)
+        if await ignored.wait() != 0:
+            raise ValueError("PRODUCTION_CONFIG_MUST_BE_GIT_IGNORED")
     if explicit_path:
         # A separate DB per selected file preserves the pre-existing default DB/config/checkpoints.
         key = compute_sha256(str(Path(explicit_path).resolve()))[:16]
@@ -188,10 +197,13 @@ async def lifespan(app: FastAPI):
         state_machine = ShuttleStateMachine(db)
     await db.init()
     config = explicit_config or await db.get_config()
+    if config and config.production_shadow_mode and not explicit_config:
+        raise ValueError("PRODUCTION_SHADOW_REQUIRES_EXPLICIT_PRIVATE_CONFIG")
     cli_p = "codex"
     if explicit_config and explicit_config.codex and explicit_config.codex.cli_path:
         cli_p = explicit_config.codex.cli_path
     app_server_manager = CodexAppServerManager(cli_p)
+    app_server_manager.production_shadow_mode = bool(config and config.production_shadow_mode)
     auto_coordinator = AutoModeCoordinator(
         db=db,
         app_server_manager=app_server_manager,
@@ -230,6 +242,7 @@ async def lifespan(app: FastAPI):
         "database_path": str(db.db_path),
         "process_id": os.getpid(),
         "startup_canary": require_canary,
+        "startup_production_shadow": bool(config and config.production_shadow_mode),
     }
     await state_machine.init()
     if config and config.canary_mode:
@@ -276,6 +289,16 @@ async def lifespan(app: FastAPI):
             auto_coordinator.chatgpt_sender = real_chatgpt_sender
             auto_coordinator.codex_queue = real_codex_queue
 
+    if config and config.production_shadow_mode:
+        from app.production_shadow import ProductionShadow
+        # Fixed private ledger prevents selecting another config filename to reset the one-send budget.
+        production_shadow = ProductionShadow(
+            BASE_DIR / "runtime" / "private-reports" / "phase2_7" / "shadow.db",
+            db.get_config, codex_observer, real_chatgpt_observer,
+            RealChatGPTMessageSender(target_url=config.chatgpt.conversation_url,
+                conversation_id=config.chatgpt.conversation_id, gpt_id=config.chatgpt.gpt_id,
+                cdp_url=config.chatgpt.cdp_url), startup_fingerprint=compute_config_fingerprint(config))
+
     if config and config.canary_mode:
         await transfer_snapshot(config, repair=True)
     yield
@@ -288,6 +311,77 @@ app = FastAPI(title="Local AI Shuttle Control Center", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.middleware("http")
+async def production_shadow_gate(request: Request, call_next):
+    cfg = await db.get_config()
+    shadow = bool((cfg and cfg.production_shadow_mode) or
+                  (runtime_identity and runtime_identity.get("startup_production_shadow")))
+    if shadow and request.method == "GET" and request.url.path.startswith("/api/"):
+        path = request.url.path
+        if not path.startswith("/api/production-shadow/") and path not in ("/api/config", "/api/state", "/api/logs", "/api/transfers"):
+            return JSONResponse(status_code=409, content={"detail": "PRODUCTION_SHADOW_USE_DEDICATED_ENDPOINTS"})
+    if shadow and request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        path = request.url.path
+        allowed = {"/api/production-shadow/baseline", "/api/production-shadow/prepare",
+                   "/api/production-shadow/authorize", "/api/production-shadow/send",
+                   "/api/production-shadow/observe"}
+        if path not in allowed:
+            reason = ("PRODUCTION_AUTO_MODE_NOT_AUTHORIZED" if path.startswith("/api/auto/")
+                      or "resume" in path else "PRODUCTION_G2C_QUEUE_FORBIDDEN" if "queue" in path
+                      else "PRODUCTION_SHADOW_USE_DEDICATED_ENDPOINTS")
+            return JSONResponse(status_code=409, content={"detail": reason})
+    return await call_next(request)
+
+
+class ShadowRequest(BaseModel):
+    config_fingerprint: str = ""
+    targets_confirmed: bool = False
+    binding: Dict[str, Any] = {}
+    operator_confirmed: bool = False
+    token: str = ""
+
+
+async def shadow_operation(method, *args):
+    if production_shadow is None:
+        raise HTTPException(status_code=409, detail="PRODUCTION_SHADOW_NOT_CONFIGURED")
+    try:
+        return await getattr(production_shadow, method)(*args)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/api/production-shadow/status")
+async def shadow_status():
+    if production_shadow is None:
+        return {"configured": False, "status": "PRODUCTION_SHADOW_NOT_CONFIGURED"}
+    return {"configured": True, "targets": await shadow_operation("targets"), "record": production_shadow.load()}
+
+
+@app.post("/api/production-shadow/baseline")
+async def shadow_baseline(req: ShadowRequest):
+    return await shadow_operation("baseline", req.config_fingerprint, req.targets_confirmed)
+
+
+@app.post("/api/production-shadow/prepare")
+async def shadow_prepare():
+    return await shadow_operation("prepare")
+
+
+@app.post("/api/production-shadow/authorize")
+async def shadow_authorize(req: ShadowRequest):
+    return await shadow_operation("authorize", req.binding, req.operator_confirmed)
+
+
+@app.post("/api/production-shadow/send")
+async def shadow_send(req: ShadowRequest):
+    return await shadow_operation("send", req.token)
+
+
+@app.post("/api/production-shadow/observe")
+async def shadow_observe():
+    return await shadow_operation("observe_planner")
 
 
 async def runtime_config_error(cfg):

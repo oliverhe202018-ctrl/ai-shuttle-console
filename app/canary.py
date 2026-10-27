@@ -56,6 +56,19 @@ def get_protected_targets(config: Optional[Any] = None) -> Dict[str, Any]:
     conversations = set()
     workspaces = set()
 
+    # Private shared registry protects real targets even under a Canary config.
+    registry = BASE_DIR / "config.protected-targets.local.json"
+    if registry.exists():
+        try:
+            private = json.loads(registry.read_text(encoding="utf-8"))
+            if not all(private.get(k) for k in ("thread_id", "conversation_id", "workspace_path")):
+                raise ValueError("Incomplete registry")
+            threads.add(private["thread_id"].lower())
+            conversations.add(private["conversation_id"].lower())
+            workspaces.add(Path(private["workspace_path"]))
+        except Exception as exc:
+            raise ValueError("PRIVATE_PROTECTED_TARGET_REGISTRY_INVALID") from exc
+
     # Module-level defaults & environment overrides
     if PRODUCTION_THREAD:
         threads.add(PRODUCTION_THREAD.strip().lower())

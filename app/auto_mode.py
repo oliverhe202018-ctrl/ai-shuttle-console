@@ -159,6 +159,11 @@ class AutoModeCoordinator:
     def active_run_id(self) -> Optional[str]:
         return self._active_run_id
 
+    async def _reject_production_shadow(self):
+        cfg = await self.get_config_fn() if self.get_config_fn else await self.db.get_config()
+        if cfg and cfg.production_shadow_mode:
+            raise ValueError("PRODUCTION_AUTO_MODE_NOT_AUTHORIZED")
+
     async def arm_run(
         self,
         max_iterations: int = 3,
@@ -168,6 +173,7 @@ class AutoModeCoordinator:
         experimental_queue_start_enabled: bool = False,
     ) -> Dict[str, Any]:
         """Authorize a new Controlled Auto-Run."""
+        await self._reject_production_shadow()
         if not operator_confirmed:
             raise ValueError("Operator confirmation is required to arm an Auto-Run")
 
@@ -190,6 +196,9 @@ class AutoModeCoordinator:
         cfg: AppConfig = await self.get_config_fn() if self.get_config_fn else await self.db.get_config()
         if not cfg:
             raise ValueError("Configuration not found")
+
+        if not cfg.canary_mode:
+            raise ValueError("PRODUCTION_AUTO_MODE_NOT_AUTHORIZED")
 
         # Validate targets
         if cfg.canary_mode:
@@ -234,6 +243,10 @@ class AutoModeCoordinator:
 
     async def start_run(self, run_id: str) -> None:
         """Launch the background orchestration loop for an armed run."""
+        await self._reject_production_shadow()
+        cfg = await self.get_config_fn() if self.get_config_fn else await self.db.get_config()
+        if cfg and not cfg.canary_mode:
+            raise ValueError("PRODUCTION_AUTO_MODE_NOT_AUTHORIZED")
         async with self._lock:
             if self.is_running:
                 raise ValueError(f"Auto-Run loop is already running for {self._active_run_id}")
@@ -305,6 +318,7 @@ class AutoModeCoordinator:
         config_fingerprint: str
     ) -> ChildTransferAuthorization:
         """Derive a single-use child transfer authorization bound to parent run (Section 13)."""
+        await self._reject_production_shadow()
         child_auth_id = f"child-auth-{secrets.token_hex(8)}"
         confirmation_token = secrets.token_hex(16)
 
@@ -441,6 +455,7 @@ class AutoModeCoordinator:
         auth: Dict[str, Any],
         iteration: int
     ) -> Tuple[bool, Optional[AutoRunState], Optional[str]]:
+        await self._reject_production_shadow()
         run_id = auth["run_id"]
         max_iterations = auth["max_iterations"]
         cfg: AppConfig = await self.get_config_fn() if self.get_config_fn else await self.db.get_config()

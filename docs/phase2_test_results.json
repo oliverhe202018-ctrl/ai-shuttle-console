@@ -126,7 +126,7 @@
     "codex": {
       "target_thread_id": "00000000-0000-0000-0000-000000000001",
       "target_project_path": "D:/workspace/production-repo",
-      "target_title": "重置跑胡子手机指导优先级",
+      "target_title": "Synthetic production thread",
       "session_file": "C:/Users/<USER>/.codex/sessions/2026/10/25/rollout-2026-10-25T08-52-06-00000000-0000-0000-0000-000000000001.jsonl",
       "total_lines": 5575,
       "user_turns": 10,

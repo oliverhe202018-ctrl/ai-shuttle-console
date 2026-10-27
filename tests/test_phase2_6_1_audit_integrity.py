@@ -296,7 +296,13 @@ async def test_9_stale_thread_level_completed_status_cannot_complete_new_iterati
         payload_strategy=ProductionShuttlePayloadStrategy(),
     )
 
-    auth = await coord.arm_run(max_iterations=1, operator_confirmed=True)
+    # Production arming is forbidden in Phase 2.7. Exercise the existing
+    # correlation unit with synthetic local state, without issuing a live run.
+    with pytest.raises(ValueError, match="PRODUCTION_AUTO_MODE_NOT_AUTHORIZED"):
+        await coord.arm_run(max_iterations=1, operator_confirmed=True)
+    from app.canary import compute_config_fingerprint
+    auth = {"run_id": "synthetic-correlation-unit", "max_iterations": 1,
+            "canary_mode": False, "config_fingerprint": compute_config_fingerprint(cfg)}
 
     long_prompt = "Perform production audit:\n" + ("- Task step detail for testing\n" * 10)
     # Patch browser observer to return completed planner response

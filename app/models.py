@@ -207,12 +207,26 @@ class ProtectedTargetsConfig(BaseModel):
 
 class AppConfig(BaseModel):
     canary_mode: bool = False
+    production_shadow_mode: bool = False
+    allow_real_c2g_send: bool = False
+    allow_real_g2c_queue: bool = False
+    allow_auto_run: bool = False
+    allow_thread_resume_side_effect: bool = False
+    production_rollout_path: Optional[str] = None
     codex: CodexConfig
     chatgpt: ChatGPTConfig
     route: RouteConfig = Field(default_factory=RouteConfig)
     protected_targets: Optional[ProtectedTargetsConfig] = Field(default=None, description="Protected production targets")
     server_host: str = "127.0.0.1"
     server_port: int = 8765
+
+    @model_validator(mode="after")
+    def validate_shadow_controls(self):
+        if self.production_shadow_mode:
+            if (self.canary_mode or self.allow_real_g2c_queue or self.allow_auto_run
+                    or self.allow_thread_resume_side_effect or not self.route.manual_approval_required):
+                raise ValueError("PRODUCTION_SHADOW_CONTRADICTORY_CONFIG")
+        return self
 
 
 class CheckpointRecord(BaseModel):

@@ -383,6 +383,7 @@ class CodexAppServerManager:
 
     def __init__(self, cli_path: str):
         self.cli_path = cli_path
+        self.production_shadow_mode = False
         self.transport = AppServerTransport(cli_path)
         self.rpc_client = AppServerRpcClient(self.transport)
         self.adapter = CodexThreadLifecycleAdapter(self.rpc_client)
@@ -415,6 +416,8 @@ class CodexAppServerManager:
         return state["is_cold"], state["status_type"]
 
     async def resume_thread_safely(self, thread_id: str, expected_workspace: Optional[str] = None) -> dict:
+        if self.production_shadow_mode:
+            raise ValueError("PRODUCTION_AUTO_MODE_NOT_AUTHORIZED")
         await self.ensure_started()
         return await self.adapter.resume_thread(thread_id, expected_workspace=expected_workspace)
 

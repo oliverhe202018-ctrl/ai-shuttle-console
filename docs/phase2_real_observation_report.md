@@ -56,7 +56,7 @@ All 22 unit, integration, and security invariant tests executed cleanly in the v
 ### 4.1 Target Configuration
 - **Target Thread ID**: `00000000-0000-0000-0000-000000000001`
 - **Target Project Directory**: `D:\workspace\production-repo`
-- **Expected Conversation Title**: `重置跑胡子手机指导优先级`
+- **Expected Conversation Title**: `Synthetic production thread`
 - **Session Index Path**: `C:\Users\<USER>\.codex\session_index.jsonl`
 - **Actual File Located**: `C:\Users\<USER>\.codex\sessions\2026\10\25\rollout-2026-10-25T08-52-06-00000000-0000-0000-0000-000000000001.jsonl`
 

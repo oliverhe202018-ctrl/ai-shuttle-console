@@ -75,6 +75,8 @@ cookies/
 config.json
 config.local*.json
 config.canary.local*.json
+config.production*.local*.json
+config.protected-targets.local*.json
 canary_workspace/
 
 # Ad-hoc Scratch & Patching Scripts (preserve execute_live_canary_round*.py)

@@ -41,8 +41,9 @@ def test_incomplete_session_identity_cannot_be_skipped(tmp_path, field):
         blockers(tmp_path)
 
 
-def test_historical_orphan_is_not_claimed_to_be_current_execution(tmp_path):
-    rollout(tmp_path, [event("task_started", "orphan"), event("task_started"), event("task_complete")])
+def test_context_without_distinct_started_cannot_clear_historical_orphan(tmp_path):
+    rollout(tmp_path, [event("task_started", "orphan"),
+        {"type": "turn_context", "payload": {"turn_id": "turn-one"}}, event("task_complete")])
     result = blockers(tmp_path)
     assert result[0]["turn_ids"] == ["orphan"]
     assert result[0]["classification"] == "UNKNOWN_LIVENESS"

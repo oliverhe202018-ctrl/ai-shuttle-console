@@ -36,67 +36,23 @@ def protocol_binding():
                 str(p.relative_to(root)).replace("\\", "/") + ":" + compute_sha256(p.read_bytes().hex()) for p in files))}
 
 
-def active_production_sessions(workspace, sessions_dir, exclude_thread=None):
-    """Return quiescence blockers, including UNKNOWN, rather than infer activity.
-
-    A missing/unreadable session inventory is UNKNOWN and fails closed. Scan all
-    rollouts because the configured session index is JSONL, not a SQLite DB.
-    An unmatched historical start is not proof of current execution or idleness.
-    Without an owning app-server observation it remains UNKNOWN and blocking,
-    even when a different, later turn completed. Recency never resolves it.
-    """
+def production_session_liveness(workspace, sessions_dir, exclude_thread=None):
+    """Inspect full rollouts; retain superseded history separately from blockers."""
+    from app.session_liveness import inspect_rollout
     root = Path(sessions_dir)
     if not root.is_dir():
         raise ValueError("PRODUCTION_SESSION_INVENTORY_UNAVAILABLE")
-    active = []
+    reports = []
     for path in root.rglob("*.jsonl"):
-        with path.open(encoding="utf-8") as stream:
-            header = json.loads(stream.readline())
-            meta = header.get("payload", {})
-            if (header.get("type") != "session_meta" or not isinstance(meta, dict)
-                    or any(not isinstance(meta.get(key), str) or not meta[key] for key in ("id", "cwd"))):
-                raise ValueError("PRODUCTION_SESSION_INVENTORY_UNKNOWN")
-            if not same_path(meta.get("cwd", ""), workspace):
-                continue
-            if meta.get("id") == exclude_thread:
-                continue
-            pending = set()
-            lifecycle_observed = False
-            closed = set()
-            unbound_activity = False
-            for line in stream:
-                if not line.strip():
-                    continue
-                record = json.loads(line)
-                p = record.get("payload", {})
-                kind, tid = p.get("type"), p.get("turn_id")
-                if record.get("type") == "turn_context":
-                    if not isinstance(tid, str) or not tid:
-                        raise ValueError("PRODUCTION_SESSION_LIFECYCLE_UNKNOWN")
-                    if tid not in closed:
-                        pending.add(tid)
-                if kind == "task_started":
-                    if not isinstance(tid, str) or not tid:
-                        raise ValueError("PRODUCTION_SESSION_LIFECYCLE_UNKNOWN")
-                    lifecycle_observed = True
-                    pending.add(tid)
-                    closed.discard(tid)
-                elif kind in ("task_complete", "task_aborted", "turn_aborted"):
-                    if not isinstance(tid, str) or not tid:
-                        raise ValueError("PRODUCTION_SESSION_LIFECYCLE_UNKNOWN")
-                    lifecycle_observed = True
-                    pending.discard(tid)
-                    closed.add(tid)
-                elif kind in ("function_call", "custom_tool_call") and not pending:
-                    # Tool activity without an open turn cannot be attributed to
-                    # an already closed lifecycle. Never silently treat it idle.
-                    unbound_activity = True
-            if pending or not lifecycle_observed or unbound_activity:
-                active.append({"thread_id": meta.get("id"), "turn_ids": sorted(pending),
-                               "classification": "UNKNOWN_LIVENESS",
-                               "reason": ("UNTERMINATED_TURN" if pending else "UNBOUND_TOOL_ACTIVITY"
-                                          if unbound_activity else "LIFECYCLE_NOT_OBSERVED")})
-    return active
+        report = inspect_rollout(path, workspace, exclude_thread)
+        if report is not None:
+            reports.append(report)
+    return reports
+
+
+def active_production_sessions(workspace, sessions_dir, exclude_thread=None):
+    """Unknown current turns block; proven superseded orphans do not."""
+    return [r for r in production_session_liveness(workspace, sessions_dir, exclude_thread) if r["blocking"]]
 
 
 @contextmanager
@@ -163,6 +119,16 @@ class TransactionalProductionShadow(ProductionShadow):
         cfg = await self.config()
         targets["parent_binding"] = self.parent_binding(cfg)
         return targets
+
+    async def quiescence(self):
+        """One read-only inventory and fresh repository checkpoint; no grant/I/O."""
+        cfg = await self.config()
+        sessions = production_session_liveness(cfg.codex.repo_path, cfg.codex.sessions_dir)
+        blockers = [r for r in sessions if r["blocking"]]
+        snapshot = take_checkpoint_snapshot(cfg.codex.repo_path, active_sessions=blockers)
+        return {"status": "PRODUCTION_WORKSPACE_GENUINELY_BUSY" if blockers else "PRODUCTION_QUIESCENCE_VERIFIED",
+                "reauth_status": None if blockers else "PHASE_2_7_TRANSACTIONAL_C2G_REAUTH_READY",
+                "sessions": sessions, "snapshot": snapshot, "transaction_authorized": False}
 
     def parent_binding(self, cfg):
         return {"workspace": str(Path(cfg.codex.repo_path).resolve()),

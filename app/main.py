@@ -290,7 +290,16 @@ async def lifespan(app: FastAPI):
             auto_coordinator.codex_queue = real_codex_queue
 
     if config and config.production_shadow_mode:
-        from app.transactional_c2g import TransactionalProductionShadow
+        from app.transactional_c2g import TransactionalProductionShadow, protocol_binding
+        identity_process = await asyncio.create_subprocess_exec(
+            "git", "-C", str(BASE_DIR), "rev-parse", "HEAD",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        commit_output, _ = await identity_process.communicate()
+        if identity_process.returncode:
+            raise ValueError("PRODUCTION_SHADOW_IMPLEMENTATION_IDENTITY_UNAVAILABLE")
+        runtime_identity["implementation_commit"] = commit_output.decode().strip()
+        runtime_identity["protocol_binding"] = protocol_binding()
+        runtime_identity["transactional_c2g"] = True
         # Fixed private ledger prevents selecting another config filename to reset the one-send budget.
         production_shadow = TransactionalProductionShadow(
             BASE_DIR / "runtime" / "private-reports" / "phase2_7" / "shadow.db",
@@ -360,7 +369,13 @@ async def shadow_operation(method, *args):
 async def shadow_status():
     if production_shadow is None:
         return {"configured": False, "status": "PRODUCTION_SHADOW_NOT_CONFIGURED"}
-    return {"configured": True, "targets": await shadow_operation("targets"), "record": production_shadow.load()}
+    return {"configured": True, "targets": await shadow_operation("targets"), "record": production_shadow.load(),
+            "runtime_identity": runtime_identity}
+
+
+@app.get("/api/production-shadow/quiescence")
+async def shadow_quiescence():
+    return await shadow_operation("quiescence")
 
 
 @app.post("/api/production-shadow/baseline")

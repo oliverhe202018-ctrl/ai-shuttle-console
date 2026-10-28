@@ -1,18 +1,24 @@
 # Phase 2.7 Implementation Report
 
-Status: `PHASE_2_7_SHADOW_IMPLEMENTATION_READY`.
+Status: `PHASE_2_7_PINNED_SOURCE_READY`.
 
-Production Shadow provides a separate operator UI, an explicit private configuration, exact target guards, a read-only baseline, zero-rewrite C2G preview, bound manual authorization, one durable send attempt, correlated planner observation, and an unauthorized G2C preparation. The flow ends before Codex execution.
+Production Shadow provides a separate operator UI, an explicit private configuration, exact target guards, immutable source artifact pinning, a read-only baseline, zero-rewrite C2G preview, bound manual authorization, one durable send attempt, correlated planner observation, and an unauthorized G2C preparation. The flow ends before Codex execution.
+
+## Phase 2.7.0 Additions
+
+- **Immutable Source Model Added**: Added `ProductionSourceArtifact` schema to `app/models.py`, capturing `thread_id`, `user_turn_id`, `user_message_id`, `assistant_message_id`, `completed_at`, `rollout_line`, `sha256`, `char_count`, `rollout_path`, and `expected_marker`. Added `production_source: Optional[ProductionSourceArtifact]` to `AppConfig`.
+- **Exact Artifact Retrieval Implemented**: Implemented `observe_pinned_source_artifact` in `app/production_shadow.py`. The function verifies exact assistant message ID, `final_answer` phase, task completion evidence, SHA-256 match, character count match, and terminal marker.
+- **Latest-Final Dependency Removed**: Decoupled artifact validity (`PINNED_SOURCE_ARTIFACT_VERIFIED`) from thread runtime state (`idle`, `active`, `completed_newer_turns`). Subsequent administrative/precheck turns in the source thread do not invalidate the pinned artifact.
+- **Source Auto-Rebinding Prevented**: Discovery of newer finals in the thread records an audit event (`NEWER_SOURCE_FINAL_OBSERVED_NOT_SELECTED`) without modifying the pinned source. Added explicit operator rebinding route `POST /api/production-shadow/rebind-source` and method `rebind_source(...)`.
+- **Repository Freshness Gate**: Enforces that substantive repository mutations post-handoff emit `PINNED_SOURCE_STALE_AFTER_REPOSITORY_CHANGE` and block preparation/sending.
+- **UI Boundary Banner**: Added prominent operator notice in `app/templates/index.html`: "Production source threads are evidence sources, not Shuttle control threads."
 
 ## Changed files
 
-- Configuration/privacy: `.gitignore`, `app/models.py`, `app/canary.py`.
+- Configuration and models: `app/models.py`.
 - Shadow coordinator and API/UI: `app/production_shadow.py`, `app/main.py`, `app/templates/index.html`.
-- Execution and delivery guards: `app/adapters.py`, `app/auto_mode.py`, `app/canonical.py`, `app/codex_app_server.py`.
-- Synthetic tests and existing regression fixtures: `tests/test_phase2_7_production_shadow.py`, `tests/test_phase2_6_1_audit_integrity.py`, `tests/test_phase2_4_4_isolation_audit.py`, `tests/test_phase2_observation_and_reconciliation.py`, `tests/test_shuttle_console.py`.
-- Public documentation: this report, `docs/phase2_7_production_shadow.md`, `docs/phase2_real_observation_report.md`, `docs/phase2_test_results.json`.
-
-Historical public fixtures/reports contained production labels. Their current versions now use synthetic titles and branches. Original copies stay only in ignored private evidence. The correlation regression continues to test stale-completion rejection using synthetic state while asserting that production Auto arming is forbidden.
+- Synthetic tests and privacy invariants: `tests/test_phase2_7_production_shadow.py`.
+- Public documentation: `docs/phase2_7_production_shadow.md`, `docs/phase2_7_implementation_report.md`.
 
 ## Mode guards
 
@@ -26,22 +32,22 @@ Payload equality and raw SHA-256 are checked before authorization and again befo
 
 Private configuration: `config.production.shadow.local.json`. Shared protection registry: `config.protected-targets.local.json`. Both configurations and `runtime/private-reports/phase2_7/` are ignored and excluded from the Git index.
 
-The local CLI, session directory/index, and CDP/profile parameters were discovered from the existing local environment. Exact production thread, canonical cwd, title/index metadata, and a unique rollout matched. The actual repository branch differs from the configured expected branch. CDP is connected, but the exact production conversation is not open; authentication and composer readiness for that page remain unverified.
+The approved fresh handoff artifact was migrated from existing private evidence into the `production_source` structure in `config.production.shadow.local.json` without regeneration.
 
-The repository has a preexisting dirty state. An initial recheck matched the read-only implementation snapshot, but the final comparison detected a repository change during implementation. The delta is recorded privately as `PRODUCTION_REPOSITORY_CHANGED_DURING_SHADOW` and requires operator review before live acceptance. No cause is assigned to that change. Shuttle issued no production queue, resume, task, browser message, or repository mutation.
-
-Actual identities, paths, payloads, and raw readiness evidence remain in local private files. Public-tree and staged-addition scans showed zero configured private-value matches; no private config or evidence file is tracked.
+A read-only precheck was executed from the `ai-shuttle-console` development/control context:
+1. **Pinned Source Verification**: Exact assistant message ID, task completion, character count, and SHA-256 were verified (`PINNED_SOURCE_ARTIFACT_VERIFIED`).
+2. **Repository Freshness**: The repository freshness check identified newer substantive files created after the handoff timestamp (~22:43 UTC). Accurately evaluated and reported as `FRESH_HANDOFF_ALREADY_STALE`.
+3. **Target Readiness**: Passive CDP probe confirmed exact target count = 1, composer found and ready, non-streaming, no login/challenge forms (`PRODUCTION_CHATGPT_TARGET_READY`).
+4. **C2G Preview**: Prepared C2G payload equality was verified against raw final text with zero rewriting (`PRODUCTION_C2G_PREVIEW_VERIFIED`).
+5. **Precheck Gate**: Because the repository has post-handoff modifications, the overall live shadow precheck status is safely blocked (`PHASE_2_7_LIVE_SHADOW_PRECHECK_BLOCKED`), preventing any stale handoff from being sent.
+6. **Zero Mutations**: All mutation counts remained strictly zero (production ChatGPT sends: 0, production G2C queues: 0, production thread resumes: 0, production Codex tasks started: 0, production Git writes: 0).
 
 ## Validation
 
-Full regression: **397 passed, 1 skipped, 3 warnings**, including **52 Production Shadow tests**. The warnings are in existing Windows transport/mock tests. All previous test files ran; no live Canary was repeated. Command: `python -m pytest -p pytest_asyncio.plugin -vv -o faulthandler_timeout=45 --durations=8` with plugin autoload disabled and the asyncio plugin explicitly loaded.
-
-The synthetic browser UI check passed with zero page-script errors, visible prepared status, and sending disabled without its separate authorization token. Python compilation and Git whitespace checks passed. Nineteen generic source/test/documentation files changed.
+- **Targeted Tests**: 67 passed in `tests/test_phase2_7_production_shadow.py` (including all 15 new Phase 2.7.0 unit/integration tests).
+- **Public Repository Sanitization**: `test_real_ids_stay_out_of_public_repository` verified that zero private IDs, real message IDs, real hashes, or private workspace paths exist in any tracked file.
+- **Full Suite Regression**: 411 passed, 1 skipped.
 
 ## Live Shadow Report
 
-Not run. No live acceptance status is claimed, and Phase 2.7.1 has not begun.
-
-Before live acceptance, the operator must resolve the branch discrepancy, review the recorded preexisting dirty state and subsequent repository delta, open exactly one configured production conversation in the configured authenticated CDP browser, and ensure Codex is idle/completed. Separate live authorization then permits a fresh baseline and exact C2G preview; a further explicit bound operator action authorizes one real C2G send. Observe the new planner response, extract strictly, prepare G2C unchanged if actionable, and stop without queueing.
-
-See [the implementation and operator contract](phase2_7_production_shadow.md) for endpoint details. Commit SHA and publication branch are reported with the final delivery.
+Not run. No live C2G message was sent.

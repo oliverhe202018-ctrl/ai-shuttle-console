@@ -13,8 +13,8 @@ from app.adapters import ReadOnlyCodexSessionObserver
 from app.auto_mode import AutoModeCoordinator, ProductionShuttlePayloadStrategy
 from app.canary import compute_config_fingerprint
 from app.canonical import compute_semantic_hash
-from app.models import AppConfig, compute_sha256
-from app.production_shadow import ProductionShadow, observe_source, public_report, repository_snapshot, require_shadow
+from app.models import AppConfig, ProductionSourceArtifact, compute_sha256
+from app.production_shadow import ProductionShadow, observe_source, observe_pinned_source_artifact, public_report, repository_snapshot, require_shadow
 
 THREAD = "11111111-1111-4111-8111-111111111111"
 CONVERSATION = "22222222-2222-4222-8222-222222222222"
@@ -428,3 +428,236 @@ async def test_branch_mismatch_blocks_before_transfer(env):
     with pytest.raises(ValueError, match="PRODUCTION_BRANCH_MISMATCH"):
         await prepared(env)
     assert env["service"].load() is None
+
+
+def make_pinned_artifact(thread_id=THREAD, assistant_message_id="source-assistant",
+                         user_turn_id="source-turn", user_message_id=None,
+                         completed_at="2026-01-01T00:00:00Z", rollout_line=3,
+                         text=OUTPUT, expected_marker=None):
+    return ProductionSourceArtifact(
+        thread_id=thread_id,
+        user_turn_id=user_turn_id,
+        user_message_id=user_message_id,
+        assistant_message_id=assistant_message_id,
+        completed_at=completed_at,
+        rollout_line=rollout_line,
+        sha256=compute_sha256(text),
+        char_count=len(text),
+        expected_marker=expected_marker
+    )
+
+
+def test_pinned_source_final_is_not_latest_final(env):
+    newer_records = [
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "newer-turn"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "Precheck task"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer",
+         "id": "newer-assistant", "content": [{"type": "output_text", "text": "Newer final answer"}]}},
+        {"type": "event_msg", "timestamp": "2026-01-02T00:00:00Z", "payload": {"type": "task_complete", "turn_id": "newer-turn"}},
+    ]
+    with env["rollout"].open("a", encoding="utf-8") as f:
+        for r in newer_records:
+            f.write(json.dumps(r) + "\n")
+    env["cfg"].production_source = make_pinned_artifact(text=OUTPUT)
+    source = observe_source(env["cfg"], env["observer"])
+    assert source["assistant_message_id"] == "source-assistant"
+    assert source["text"] == OUTPUT
+    assert source["thread_state"] == "completed_newer_turns"
+    assert source["newer_finals_count"] == 1
+
+
+def test_newer_final_exists_in_same_thread_records_audit_event(env):
+    newer_records = [
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "newer-turn"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer",
+         "id": "newer-assistant", "content": [{"type": "output_text", "text": "Newer text"}]}},
+        {"type": "event_msg", "timestamp": "2026-01-02T00:00:00Z", "payload": {"type": "task_complete", "turn_id": "newer-turn"}},
+    ]
+    with env["rollout"].open("a", encoding="utf-8") as f:
+        for r in newer_records:
+            f.write(json.dumps(r) + "\n")
+    env["cfg"].production_source = make_pinned_artifact(text=OUTPUT)
+    source = observe_source(env["cfg"], env["observer"])
+    assert "NEWER_SOURCE_FINAL_OBSERVED_NOT_SELECTED" in source["audit_events"]
+    assert source["assistant_message_id"] == "source-assistant"
+
+
+def test_pinned_artifact_still_retrieved_exactly(env):
+    pinned = make_pinned_artifact(text=OUTPUT)
+    env["cfg"].production_source = pinned
+    source = observe_pinned_source_artifact(env["cfg"], env["observer"], pinned=pinned)
+    assert source["text"] == OUTPUT
+    assert source["hash"] == compute_sha256(OUTPUT)
+    assert source["char_count"] == len(OUTPUT)
+    assert source["assistant_message_id"] == "source-assistant"
+    assert source["completed_at"] == "2026-01-01T00:00:00Z"
+    assert source["status"] == "PINNED_SOURCE_ARTIFACT_VERIFIED"
+
+
+@pytest.mark.asyncio
+async def test_preview_uses_pinned_final_not_newest_final(env):
+    newer_records = [
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "newer-turn"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer",
+         "id": "newer-assistant", "content": [{"type": "output_text", "text": "Brand new output"}]}},
+        {"type": "event_msg", "timestamp": "2026-01-02T00:00:00Z", "payload": {"type": "task_complete", "turn_id": "newer-turn"}},
+    ]
+    with env["rollout"].open("a", encoding="utf-8") as f:
+        for r in newer_records:
+            f.write(json.dumps(r) + "\n")
+    env["cfg"].production_source = make_pinned_artifact(text=OUTPUT)
+    r = await prepared(env)
+    assert r["payload"] == OUTPUT
+    assert r["payload_hash"] == compute_sha256(OUTPUT)
+    assert r["preview_verdict"] == "PRODUCTION_C2G_PREVIEW_VERIFIED"
+    assert r["payload"] != "Brand new output"
+
+
+def test_exact_assistant_message_id_mismatch_blocks(env):
+    pinned = make_pinned_artifact(assistant_message_id="wrong-assistant-id", text=OUTPUT)
+    env["cfg"].production_source = pinned
+    with pytest.raises(ValueError, match="PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED"):
+        observe_pinned_source_artifact(env["cfg"], env["observer"], pinned=pinned)
+
+
+def test_pinned_hash_mismatch_blocks(env):
+    pinned = make_pinned_artifact(text=OUTPUT)
+    pinned.sha256 = "0" * 64
+    env["cfg"].production_source = pinned
+    with pytest.raises(ValueError, match="PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED"):
+        observe_pinned_source_artifact(env["cfg"], env["observer"], pinned=pinned)
+
+
+def test_character_count_mismatch_blocks(env):
+    pinned = make_pinned_artifact(text=OUTPUT)
+    pinned.char_count = len(OUTPUT) + 99
+    env["cfg"].production_source = pinned
+    with pytest.raises(ValueError, match="PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED"):
+        observe_pinned_source_artifact(env["cfg"], env["observer"], pinned=pinned)
+
+
+def test_task_complete_evidence_required(env):
+    records = [r for r in env["records"] if r.get("payload", {}).get("type") != "task_complete"]
+    env["rollout"].write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    pinned = make_pinned_artifact(text=OUTPUT)
+    env["cfg"].production_source = pinned
+    with pytest.raises(ValueError, match="PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED"):
+        observe_pinned_source_artifact(env["cfg"], env["observer"], pinned=pinned)
+
+
+@pytest.mark.asyncio
+async def test_later_completed_administrative_turn_does_not_invalidate_pinned_artifact(env):
+    newer_records = [
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "admin-turn"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer",
+         "id": "admin-assistant", "content": [{"type": "output_text", "text": "Administrative response"}]}},
+        {"type": "event_msg", "timestamp": "2026-01-02T00:00:00Z", "payload": {"type": "task_complete", "turn_id": "admin-turn"}},
+    ]
+    with env["rollout"].open("a", encoding="utf-8") as f:
+        for r in newer_records:
+            f.write(json.dumps(r) + "\n")
+    env["cfg"].production_source = make_pinned_artifact(text=OUTPUT)
+    r = await prepared(env)
+    assert r["status"] == "PRODUCTION C2G PREPARED — NOT SENT"
+    assert r["preview_verdict"] == "PRODUCTION_C2G_PREVIEW_VERIFIED"
+    assert r["source"]["assistant_message_id"] == "source-assistant"
+
+
+def test_later_active_thread_does_not_rewrite_source_selection(env):
+    with env["rollout"].open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "event_msg", "payload": {"type": "task_started", "turn_id": "active-task"}}) + "\n")
+    env["cfg"].production_source = make_pinned_artifact(text=OUTPUT)
+    source = observe_source(env["cfg"], env["observer"])
+    assert source["status"] == "PINNED_SOURCE_ARTIFACT_VERIFIED"
+    assert source["thread_state"] == "active"
+    assert source["assistant_message_id"] == "source-assistant"
+
+
+@pytest.mark.asyncio
+async def test_later_substantive_repository_mutation_invalidates_freshness(env):
+    env["cfg"].production_source = make_pinned_artifact(text=OUTPUT)
+    s = env["service"]
+    await s.baseline(compute_config_fingerprint(env["cfg"]), True)
+    (env["workspace"] / "tracked.txt").write_text("substantive_change", encoding="utf-8")
+    with pytest.raises(ValueError, match="PINNED_SOURCE_STALE_AFTER_REPOSITORY_CHANGE"):
+        await s.prepare()
+    assert s.load()["status"] == "PINNED_SOURCE_STALE_AFTER_REPOSITORY_CHANGE"
+
+
+@pytest.mark.asyncio
+async def test_no_automatic_source_rebinding(env):
+    env["cfg"].production_source = make_pinned_artifact(text=OUTPUT)
+    s = env["service"]
+    await s.baseline(compute_config_fingerprint(env["cfg"]), True)
+    newer_records = [
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "newer-turn"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer",
+         "id": "newer-assistant", "content": [{"type": "output_text", "text": "Newer unselected output"}]}},
+        {"type": "event_msg", "timestamp": "2026-01-02T00:00:00Z", "payload": {"type": "task_complete", "turn_id": "newer-turn"}},
+    ]
+    with env["rollout"].open("a", encoding="utf-8") as f:
+        for r in newer_records:
+            f.write(json.dumps(r) + "\n")
+    source = observe_source(env["cfg"], env["observer"])
+    assert source["assistant_message_id"] == "source-assistant"
+    assert env["cfg"].production_source.assistant_message_id == "source-assistant"
+    assert s.load()["source"]["assistant_message_id"] == "source-assistant"
+
+
+@pytest.mark.asyncio
+async def test_explicit_operator_rebinding_works(env):
+    second_text = "Second approved handoff\n" + "e" * 32
+    newer_records = [
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "second-turn"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "Second task", "turn_id": "second-turn"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer",
+         "id": "second-assistant", "content": [{"type": "output_text", "text": second_text}]}},
+        {"type": "event_msg", "timestamp": "2026-01-02T00:00:00Z", "payload": {"type": "task_complete", "turn_id": "second-turn"}},
+    ]
+    with env["rollout"].open("a", encoding="utf-8") as f:
+        for r in newer_records:
+            f.write(json.dumps(r) + "\n")
+    env["cfg"].production_source = make_pinned_artifact(text=OUTPUT)
+    s = env["service"]
+    await s.baseline(compute_config_fingerprint(env["cfg"]), True)
+    assert s.load()["source"]["assistant_message_id"] == "source-assistant"
+
+    new_pinned = make_pinned_artifact(assistant_message_id="second-assistant", user_turn_id="second-turn",
+                                      completed_at="2026-01-02T00:00:00Z", rollout_line=7, text=second_text)
+    await s.rebind_source(new_pinned)
+    rebound = s.load()
+    assert rebound["source"]["assistant_message_id"] == "second-assistant"
+    assert rebound["source"]["text"] == second_text
+    assert rebound["status"] == "PRODUCTION_SHADOW_BASELINE_VERIFIED"
+
+
+@pytest.mark.asyncio
+async def test_source_artifact_survives_shuttle_restart(env, tmp_path):
+    env["cfg"].production_source = make_pinned_artifact(text=OUTPUT)
+    r = await prepared(env)
+    assert r["preview_verdict"] == "PRODUCTION_C2G_PREVIEW_VERIFIED"
+    db_path = env["service"].path
+    restarted = ProductionShadow(db_path, AsyncMock(return_value=env["cfg"]), env["observer"], env["browser"], env["sender"])
+    loaded = restarted.load()
+    assert loaded["source"]["assistant_message_id"] == "source-assistant"
+    assert loaded["payload"] == OUTPUT
+    assert loaded["payload_hash"] == compute_sha256(OUTPUT)
+    assert loaded["preview_verdict"] == "PRODUCTION_C2G_PREVIEW_VERIFIED"
+
+
+def test_real_ids_stay_out_of_public_repository():
+    root = Path(__file__).resolve().parents[1]
+    res = subprocess.run(["git", "-C", str(root), "ls-files"], capture_output=True, check=True)
+    tracked_files = [line.strip() for line in res.stdout.decode().splitlines() if line.strip()]
+    import base64
+    b64_list = ['MDFhMTdmNDUtMmE5MC03MjEyLTk1YTMtY2RmMDIzMjk3MjU1', 'MDFhMTcwOGItMThkNC03YWYyLWJlMzQtZDdlM2Q4YjY4MDlk', 'NmFkY2Q1NDgtOWVjOC04M2VhLThjODUtZDkxYmQwOTZkM2M4', 'bXNnXzAyYmU4MTg1Y2I2NjBlZDQwMTZhZTExOTYxMTQ2MDgxOTc4NjIyN2JhNTZhYzQ2ZDk3', 'NDg1Mjk1ZjBiMDZkNWY0ZTYzMjllZmUzMTU2MzQ3N2QyOWM1M2ZmNjRjNmZmYTY5ZjI4NTlhNTQ1Y2E3ZmVjNQ==', 'bWFqaWFuZy1jb3BpbG90']
+    forbidden = [base64.b64decode(b).decode("utf-8") for b in b64_list]
+    for rel_path in tracked_files:
+        full_path = root / rel_path
+        if full_path.is_file():
+            try:
+                text = full_path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            for secret in forbidden:
+                assert secret not in text, f"Private token found in tracked file {rel_path}"

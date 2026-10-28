@@ -1,8 +1,8 @@
 # Phase 2.7 — Production Shadow implementation
 
-Status: `PHASE_2_7_SHADOW_IMPLEMENTATION_READY`. Regression: **397 passed, 1 skipped**, including **52 Shadow tests**. Live acceptance has not run. See [the implementation report](phase2_7_implementation_report.md).
+Status: `PHASE_2_7_PINNED_SOURCE_READY`. Regression: **411 passed, 1 skipped**, including **67 Production Shadow tests**. Live acceptance has not run. See [the implementation report](phase2_7_implementation_report.md).
 
-The planner remains the configured ChatGPT conversation. The Shuttle transports the exact latest completed Codex final response, without an envelope, nonce, summary, or generated instruction. A returned prompt is extracted using the existing strict planner classifier and is prepared for review without execution.
+The planner remains the configured ChatGPT conversation. The Shuttle transports the exact pinned Codex final response, without an envelope, nonce, summary, or generated instruction. A returned prompt is extracted using the existing strict planner classifier and is prepared for review without execution.
 
 ## Mode and configuration
 
@@ -21,9 +21,58 @@ Required controls:
 }
 ```
 
-The private config supplies the exact Codex thread, title, canonical workspace, expected branch, session directory/index, rollout path, CLI, browser profile, loopback CDP endpoint, exact ChatGPT URL/conversation/project IDs, and `protected_targets`. The configuration fingerprint is computed from the complete validated configuration. Contradictory controls fail closed.
+The private config supplies the exact Codex thread, title, canonical workspace, expected branch, session directory/index, rollout path, CLI, browser profile, loopback CDP endpoint, exact ChatGPT URL/conversation/project IDs, `production_source` artifact pin, and `protected_targets`. The configuration fingerprint is computed from the complete validated configuration. Contradictory controls fail closed.
 
 `config.protected-targets.local.json` is a separate ignored shared registry with `thread_id`, `conversation_id`, and `workspace_path`. Canary guards read it even when their own configuration has no production identities. A malformed or incomplete registry fails closed. No production identities belong in source, fixtures, examples, or this document.
+
+## Phase 2.7.0 — Immutable Production Source Artifact Pinning
+
+Phase 2.7.0 replaces dynamic "latest final answer in source thread" resolution with immutable source artifact pinning:
+
+1. **Immutable Artifact Schema (`ProductionSourceArtifact`)**:
+   Pinned sources are bound to an explicit immutable tuple:
+   - `thread_id`: synthetic source thread UUID
+   - `user_turn_id`: synthetic source user turn UUID
+   - `user_message_id`: synthetic source user message ID
+   - `assistant_message_id`: pinned assistant final message ID
+   - `completed_at`: task completion ISO timestamp
+   - `rollout_line`: line/index of assistant final answer
+   - `sha256`: raw text SHA-256
+   - `char_count`: character count
+   - `expected_marker`: terminal marker (`FRESH_PRODUCTION_HANDOFF_READY`)
+
+   Example synthetic configuration:
+   ```json
+   {
+     "production_source": {
+       "thread_id": "11111111-1111-4111-8111-111111111111",
+       "user_turn_id": "33333333-3333-4333-8333-333333333333",
+       "user_message_id": "msg_user_synthetic",
+       "assistant_message_id": "msg_assistant_synthetic",
+       "completed_at": "2026-01-01T00:00:00Z",
+       "rollout_line": 203,
+       "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+       "char_count": 13578,
+       "expected_marker": "FRESH_PRODUCTION_HANDOFF_READY"
+     }
+   }
+   ```
+
+2. **Exact Artifact Retrieval (`observe_pinned_source_artifact`)**:
+   Scans session records and verifies that the exact assistant message ID exists, represents a true `final_answer` phase, has associated task-complete evidence, matches the pinned SHA-256 and char count, and ends with the expected marker. It does not return the latest final simply because newer turns exist.
+
+3. **Decoupled Artifact Integrity vs. Thread Runtime State**:
+   `PINNED_SOURCE_ARTIFACT_VERIFIED` is decoupled from thread runtime state (`idle`, `active`, `completed_newer_turns`). Subsequent completed administrative/precheck turns in the source thread do not invalidate the approved pinned artifact.
+
+4. **Prevention of Auto-Rebinding & Audit Logging**:
+   Discovery of newer finals in the thread records an audit event (`NEWER_SOURCE_FINAL_OBSERVED_NOT_SELECTED`) and never overwrites `production_source`. Rebinding requires explicit operator action via `POST /api/production-shadow/rebind-source`.
+
+5. **Repository Freshness Gate**:
+   Even with immutable artifact pinning, if the repository changes post-handoff, the handoff is considered stale and emits `PINNED_SOURCE_STALE_AFTER_REPOSITORY_CHANGE`.
+
+6. **UI Boundary Warning**:
+   A prominent banner is displayed in the operator console:
+   > Production source threads are evidence sources, not Shuttle control threads. Shuttle implementation/precheck instructions should be executed from the `ai-shuttle-console` development/control context, not inside the selected production source thread.
 
 ## Server restrictions
 
@@ -35,14 +84,15 @@ The private config supplies the exact Codex thread, title, canonical workspace, 
 
 ## Private API and operator sequence
 
-1. `GET /api/production-shadow/status` displays exact private target identities and the configuration fingerprint in the separate Production Shadow UI.
-2. `POST /api/production-shadow/baseline` requires target confirmation and the displayed fingerprint. It verifies the exact registry pair, rollout/header/index/title/cwd, branch, completed source turn/message, and genuine browser composer on the exact authenticated page. Running/incomplete Codex turns fail with `PRODUCTION_CODEX_NOT_IDLE`. The repository baseline includes preexisting dirty paths and dirty-content hashes.
-3. `POST /api/production-shadow/prepare` creates `PRODUCTION C2G PREPARED — NOT SENT`. Preview evidence includes source IDs/time, exact payload/hash/character count, first/last preview, destination, config fingerprint, repository HEAD, and `Payload rewrite: NONE`. Source, repository, and ChatGPT baselines must remain unchanged.
-4. `POST /api/production-shadow/authorize` requires a human confirmation and an exact binding to transfer ID, destination, payload hash, source message/turn IDs, fingerprint, and Shadow mode. It returns an expiring one-use token. It does not send.
-5. `POST /api/production-shadow/send` is a separate operator action. It rechecks all baselines and integrity. A durable SQLite compare-and-swap consumes the sole send attempt before browser I/O. The live sender checks raw composer equality and SHA-256 before one click, then verifies one new semantic user delivery. Unknown delivery is terminal and never resent. Config filename changes and service restarts cannot reset the ledger.
-6. `POST /api/production-shadow/observe` reads a completed new assistant response after the delivered user turn, rejecting stale message IDs, streaming, intervening users, and missing completion evidence. Classification is `NEXT_CODEX_PROMPT_FOUND`, `PLANNER_STOP_REQUESTED`, `PLANNER_NO_ACTIONABLE_PROMPT`, `PLANNER_RESPONSE_AMBIGUOUS`, or `PLANNER_RESPONSE_ERROR`.
-7. A single extracted prompt is stored with exact provenance/hash/character count and an identical prepared G2C message. Its state is `PRODUCTION_G2C_PREPARED_NOT_AUTHORIZED`, with `g2c_rewrite_count = 0`. The run stops at `PRODUCTION_G2C_PREPARED_FOR_REVIEW`. No queue or execution endpoint exists in this flow.
-8. Repository postchecks compare branch, HEAD, status, and dirty bytes. New changes are classified `PRODUCTION_REPOSITORY_CHANGED_DURING_SHADOW` for review, without attributing them to Shuttle.
+1. `GET /api/production-shadow/status` displays exact private target identities, pinned source details, and the configuration fingerprint in the separate Production Shadow UI.
+2. `POST /api/production-shadow/baseline` requires target confirmation and the displayed fingerprint. It verifies the exact registry pair, rollout/header/index/title/cwd, branch, pinned source artifact integrity, and genuine browser composer on the exact authenticated page.
+3. `POST /api/production-shadow/rebind-source` allows explicit operator rebinding of the source artifact prior to any send attempt.
+4. `POST /api/production-shadow/prepare` creates `PRODUCTION C2G PREPARED — NOT SENT`. Preview evidence includes pinned source IDs/time, exact payload/hash/character count, first/last preview, destination, config fingerprint, repository HEAD, and `Payload rewrite: NONE`. Source, repository, and ChatGPT baselines must remain unchanged.
+5. `POST /api/production-shadow/authorize` requires a human confirmation and an exact binding to transfer ID, destination, payload hash, source message/turn IDs, fingerprint, and Shadow mode. It returns an expiring one-use token. It does not send.
+6. `POST /api/production-shadow/send` is a separate operator action. It rechecks all baselines and integrity. A durable SQLite compare-and-swap consumes the sole send attempt before browser I/O. The live sender checks raw composer equality and SHA-256 before one click, then verifies one new semantic user delivery. Unknown delivery is terminal and never resent. Config filename changes and service restarts cannot reset the ledger.
+7. `POST /api/production-shadow/observe` reads a completed new assistant response after the delivered user turn, rejecting stale message IDs, streaming, intervening users, and missing completion evidence. Classification is `NEXT_CODEX_PROMPT_FOUND`, `PLANNER_STOP_REQUESTED`, `PLANNER_NO_ACTIONABLE_PROMPT`, `PLANNER_RESPONSE_AMBIGUOUS`, or `PLANNER_RESPONSE_ERROR`.
+8. A single extracted prompt is stored with exact provenance/hash/character count and an identical prepared G2C message. Its state is `PRODUCTION_G2C_PREPARED_NOT_AUTHORIZED`, with `g2c_rewrite_count = 0`. The run stops at `PRODUCTION_G2C_PREPARED_FOR_REVIEW`. No queue or execution endpoint exists in this flow.
+9. Repository postchecks compare branch, HEAD, status, and dirty bytes. New changes are classified `PINNED_SOURCE_STALE_AFTER_REPOSITORY_CHANGE` or `PRODUCTION_REPOSITORY_CHANGED_DURING_SHADOW` for review, without attributing them to Shuttle.
 
 The persistent private record contains source and destination turn/message IDs, timestamps, raw/semantic hashes, planner classification, exact payloads, transfer IDs, fingerprint, and pre/post repository evidence. Restart only reads these records. An attempted send cannot resume automatically; a prepared G2C remains unauthorized.
 
@@ -50,6 +100,6 @@ The persistent private record contains source and destination turn/message IDs, 
 
 All real configuration, browser discovery, target verification, raw prompts, and execution evidence stay under ignored local files or `runtime/private-reports/phase2_7/`. Public reports use an allowlist of structural statuses and metrics. Tests use synthetic identities and prohibit real browser delivery and Codex submission.
 
-Implementation readiness does not imply live acceptance. Current private readiness and any branch/browser prerequisites are recorded in `runtime/private-reports/phase2_7/configuration-readiness.json`.
+Implementation readiness does not imply live acceptance. Current private readiness and any branch/browser prerequisites are recorded in `runtime/private-reports/phase2_7/configuration-readiness.json` and `runtime/private-reports/phase2_7/fresh-handoff-binding/precheck.json`.
 
-Live acceptance requires separate operator authorization, the intended branch already active, an authenticated browser open on exactly one configured production conversation, an idle/completed Codex turn, a fresh read-only baseline, and review of the exact prepared C2G payload. The operator then authorizes one C2G and sends it once. Observe the planner, prepare G2C if actionable, and stop. Phase 2.7.1 requires separate review and authorization and is outside this implementation.
+Live acceptance requires separate operator authorization, the intended branch already active, an authenticated browser open on exactly one configured production conversation, a verified pinned source artifact, valid repository freshness, and review of the exact prepared C2G payload. The operator then authorizes one C2G and sends it once. Observe the planner, prepare G2C if actionable, and stop. Phase 2.7.1 requires separate review and authorization and is outside this implementation.

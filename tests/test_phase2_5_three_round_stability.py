@@ -27,6 +27,7 @@ import app.main as m
 import app.canary_bootstrap as bootstrap
 from app.adapters import (
     ReadOnlyCodexSessionObserver,
+    RealChatGPTBrowserObserver,
     classify_codex_delivery_outcome,
 )
 from app.canary import (
@@ -105,6 +106,15 @@ async def p25_env(temp_canary_env, monkeypatch):
     }
     await database.save_canary_bootstrap_state(verified)
     monkeypatch.setattr(bootstrap, "run_canary_bootstrap", AsyncMock(return_value=verified))
+
+    observer = RealChatGPTBrowserObserver(target_url=cfg.chatgpt.conversation_url, cdp_url=cfg.chatgpt.cdp_url)
+    observer._injected_page_data = {
+        "ready": True,
+        "human_verification_required": False,
+        "interstitial_reason": None,
+        "url": cfg.chatgpt.conversation_url,
+    }
+    monkeypatch.setattr(m, "real_chatgpt_observer", observer)
 
     sender, queue = AsyncMock(), AsyncMock()
     sender.send_message.side_effect = AssertionError("Live ChatGPT send forbidden in tests")

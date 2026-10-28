@@ -326,7 +326,7 @@ async def production_shadow_gate(request: Request, call_next):
         path = request.url.path
         allowed = {"/api/production-shadow/baseline", "/api/production-shadow/prepare",
                    "/api/production-shadow/authorize", "/api/production-shadow/send",
-                   "/api/production-shadow/observe"}
+                   "/api/production-shadow/observe", "/api/production-shadow/rebind-source"}
         if path not in allowed:
             reason = ("PRODUCTION_AUTO_MODE_NOT_AUTHORIZED" if path.startswith("/api/auto/")
                       or "resume" in path else "PRODUCTION_G2C_QUEUE_FORBIDDEN" if "queue" in path
@@ -341,6 +341,7 @@ class ShadowRequest(BaseModel):
     binding: Dict[str, Any] = {}
     operator_confirmed: bool = False
     token: str = ""
+    pinned_source: Dict[str, Any] = {}
 
 
 async def shadow_operation(method, *args):
@@ -382,6 +383,11 @@ async def shadow_send(req: ShadowRequest):
 @app.post("/api/production-shadow/observe")
 async def shadow_observe():
     return await shadow_operation("observe_planner")
+
+
+@app.post("/api/production-shadow/rebind-source")
+async def shadow_rebind_source(req: ShadowRequest):
+    return await shadow_operation("rebind_source", req.pinned_source)
 
 
 async def runtime_config_error(cfg):

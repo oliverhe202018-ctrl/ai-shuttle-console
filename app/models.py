@@ -205,6 +205,19 @@ class ProtectedTargetsConfig(BaseModel):
     extra_workspaces: List[str] = Field(default_factory=list, description="Additional protected workspace paths")
 
 
+class ProductionSourceArtifact(BaseModel):
+    thread_id: str = Field(..., description="Source Codex thread UUID")
+    user_turn_id: Optional[str] = Field(None, description="Source user turn UUID")
+    user_message_id: Optional[str] = Field(None, description="Source user message ID")
+    assistant_message_id: str = Field(..., description="Pinned assistant final message ID")
+    completed_at: Optional[str] = Field(None, description="Task completion ISO timestamp")
+    rollout_line: Optional[int] = Field(None, description="0-based line/index of assistant final answer")
+    sha256: str = Field(..., description="Raw text SHA-256")
+    char_count: int = Field(..., description="Character count")
+    rollout_path: Optional[str] = Field(None, description="Explicit rollout file path")
+    expected_marker: Optional[str] = Field(None, description="Optional terminal marker, e.g. FRESH_PRODUCTION_HANDOFF_READY")
+
+
 class AppConfig(BaseModel):
     canary_mode: bool = False
     production_shadow_mode: bool = False
@@ -213,6 +226,7 @@ class AppConfig(BaseModel):
     allow_auto_run: bool = False
     allow_thread_resume_side_effect: bool = False
     production_rollout_path: Optional[str] = None
+    production_source: Optional[ProductionSourceArtifact] = Field(default=None, description="Pinned immutable production source artifact")
     codex: CodexConfig
     chatgpt: ChatGPTConfig
     route: RouteConfig = Field(default_factory=RouteConfig)

@@ -70,6 +70,11 @@
     <p>This mode can send one real message to the configured ChatGPT production conversation but cannot execute Codex tasks.</p>
     <p>Auto execution: OFF · G2C queue permission: OFF · C2G manual authorization: REQUIRED</p>
     <p>Payload rewrite: NONE</p>
+    <div style="background:#fffbeb;border-left:4px solid #f59e0b;padding:10px 14px;margin:12px 0;color:#92400e;">
+      <strong>⚠️ Source Thread Management Boundary:</strong>
+      Production source threads are evidence sources, not Shuttle control threads.
+      Shuttle implementation/precheck instructions should be executed from the <code>ai-shuttle-console</code> development/control context, not inside the selected production source thread.
+    </div>
     <p id="shadow-run-status" style="color:var(--warning);font-weight:600">PRODUCTION_SHADOW_NOT_CONFIGURED</p>
     <pre id="shadow-targets" style="max-height:none">Production configuration not loaded.</pre>
     <label><input type="checkbox" id="shadow-target-confirm"> I confirm these exact production identities.</label>

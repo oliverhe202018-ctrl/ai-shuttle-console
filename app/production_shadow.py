@@ -32,6 +32,10 @@ def require_shadow(config):
         raise ValueError("PRODUCTION_TARGET_REGISTRY_MISMATCH")
     real_uuid(config.codex.thread_id)
     real_uuid(config.chatgpt.conversation_id)
+    if getattr(config, "production_source", None):
+        real_uuid(config.production_source.thread_id)
+        if config.production_source.thread_id != config.codex.thread_id:
+            raise ValueError("PRODUCTION_SOURCE_THREAD_MISMATCH")
     u = urlsplit(config.chatgpt.conversation_url)
     expected = (f"/g/{config.chatgpt.gpt_id}" if config.chatgpt.gpt_id else "") + f"/c/{config.chatgpt.conversation_id}"
     if (u.scheme, u.netloc, u.path) != ("https", "chatgpt.com", expected) or u.query or u.fragment:
@@ -61,8 +65,163 @@ def repository_snapshot(workspace):
             "untracked_hashes": hashes, "production_repo_preexisting_dirty_state": bool(status)}
 
 
+def observe_pinned_source_artifact(config, observer, pinned=None):
+    """Retrieve the exact pinned assistant final from rollout evidence.
+
+    Verifies:
+    - exact thread ID matches
+    - exact assistant message ID exists
+    - assistant record is a true final answer
+    - associated task completed
+    - raw SHA-256 equals pinned SHA-256
+    - character count equals pinned count
+    - content still ends with expected marker (if set)
+    - associated source turn/message evidence matches persisted identity
+    If any check fails, raises PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED.
+    """
+    require_shadow(config)
+    pinned_obj = pinned or getattr(config, "production_source", None)
+    if not pinned_obj:
+        raise ValueError("PINNED_SOURCE_ARTIFACT_REQUIRED")
+    if isinstance(pinned_obj, dict):
+        from app.models import ProductionSourceArtifact
+        pinned_obj = ProductionSourceArtifact.model_validate(pinned_obj)
+
+    if pinned_obj.thread_id != config.codex.thread_id:
+        raise ValueError("PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED")
+
+    path = Path(pinned_obj.rollout_path or config.production_rollout_path).resolve(strict=True)
+    located = observer.locate_session_file(config.codex.thread_id)
+    if not located or not same_path(path, located):
+        raise ValueError("PRODUCTION_ROLLOUT_IDENTITY_MISMATCH")
+    with path.open(encoding="utf-8") as stream:
+        header = json.loads(stream.readline())
+        meta = header.get("payload", {})
+        if (header.get("type") != "session_meta" or meta.get("id") != config.codex.thread_id
+                or not same_path(meta.get("cwd"), config.codex.repo_path)):
+            raise ValueError("PRODUCTION_SESSION_IDENTITY_MISMATCH")
+        validation = observer.validate_session_metadata(config.codex.thread_id, expected_cwd=config.codex.repo_path)
+        if validation.get("validation_errors") or not validation.get("found_in_index"):
+            raise ValueError("PRODUCTION_SESSION_INDEX_MISMATCH")
+        if config.codex.thread_title and validation.get("title") != config.codex.thread_title:
+            raise ValueError("PRODUCTION_SESSION_TITLE_MISMATCH")
+        records = [header] + [json.loads(line) for line in stream if line.strip()]
+
+    active = None
+    user_turn = None
+    user_message_id = None
+    task_active = False
+    turn_completions = {}
+    turn_aborted = set()
+    all_finals = []
+
+    for index, record in enumerate(records):
+        p = record.get("payload", {})
+        kind = p.get("type")
+        rtype = record.get("type")
+        if rtype == "turn_context" or kind == "task_started":
+            new_turn = p.get("turn_id")
+            if new_turn:
+                active = new_turn
+                task_active = True
+                user_turn = None
+                user_message_id = None
+        if kind == "user_message" or (kind == "message" and p.get("role") == "user"):
+            user_turn = p.get("turn_id") or active
+            user_message_id = p.get("id")
+        if (rtype == "response_item" and kind == "message"
+                and p.get("role") == "assistant" and p.get("phase") == "final_answer"):
+            content = p.get("content")
+            text = content if isinstance(content, str) else "".join(
+                item["text"] for item in content or [] if item.get("type") == "output_text")
+            f_entry = {
+                "text": text,
+                "assistant_message_id": p.get("id"),
+                "turn_id": p.get("turn_id") or active,
+                "user_turn_id": user_turn or p.get("turn_id") or active,
+                "user_message_id": user_message_id,
+                "line": index,
+                "timestamp": record.get("timestamp"),
+            }
+            all_finals.append(f_entry)
+        if kind == "task_complete":
+            tid = p.get("turn_id") or active
+            turn_completions[tid] = record.get("timestamp")
+            task_active = False
+        if kind in ("task_aborted", "turn_aborted"):
+            tid = p.get("turn_id") or active
+            turn_aborted.add(tid)
+            task_active = False
+
+    matching = [f for f in all_finals if f["assistant_message_id"] == pinned_obj.assistant_message_id]
+    if not matching:
+        raise ValueError("PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED")
+    target_final = matching[0]
+
+    completion = turn_completions.get(target_final["turn_id"])
+    if not completion or target_final["turn_id"] in turn_aborted:
+        raise ValueError("PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED")
+
+    text_hash = compute_sha256(target_final["text"])
+    if text_hash != pinned_obj.sha256:
+        raise ValueError("PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED")
+    if len(target_final["text"]) != pinned_obj.char_count:
+        raise ValueError("PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED")
+    if pinned_obj.expected_marker and not target_final["text"].endswith(pinned_obj.expected_marker):
+        raise ValueError("PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED")
+    if pinned_obj.user_turn_id and target_final["user_turn_id"] != pinned_obj.user_turn_id:
+        raise ValueError("PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED")
+    if pinned_obj.user_message_id and target_final["user_message_id"] and target_final["user_message_id"] != pinned_obj.user_message_id:
+        raise ValueError("PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED")
+    if pinned_obj.completed_at and completion != pinned_obj.completed_at:
+        raise ValueError("PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED")
+    if pinned_obj.rollout_line is not None and target_final["line"] != pinned_obj.rollout_line:
+        raise ValueError("PINNED_SOURCE_ARTIFACT_INTEGRITY_FAILED")
+
+    newer_finals = [f for f in all_finals if f["line"] > target_final["line"]]
+    if task_active:
+        thread_state = "active"
+    elif newer_finals:
+        thread_state = "completed_newer_turns"
+    else:
+        thread_state = "idle"
+
+    audit_events = []
+    if newer_finals:
+        audit_events.append("NEWER_SOURCE_FINAL_OBSERVED_NOT_SELECTED")
+
+    return {
+        "text": target_final["text"],
+        "assistant_message_id": target_final["assistant_message_id"],
+        "turn_id": target_final["turn_id"],
+        "user_turn_id": target_final["user_turn_id"],
+        "user_message_id": target_final["user_message_id"],
+        "completed_at": completion,
+        "line": target_final["line"],
+        "rollout_line": target_final["line"],
+        "hash": text_hash,
+        "sha256": text_hash,
+        "char_count": len(target_final["text"]),
+        "rollout_lines": len(records),
+        "session_meta": meta,
+        "rollout_path": str(path),
+        "integrity_result": "PINNED_SOURCE_ARTIFACT_VERIFIED",
+        "status": "PINNED_SOURCE_ARTIFACT_VERIFIED",
+        "thread_state": thread_state,
+        "audit_events": audit_events,
+        "newer_finals_count": len(newer_finals),
+    }
+
+
 def observe_source(config, observer):
-    """Validate the exact header and index before parsing final-answer evidence."""
+    """Validate the exact header and index before parsing final-answer evidence.
+    
+    If config.production_source is pinned, retrieves the exact pinned artifact.
+    Otherwise, evaluates the latest completed turn in the rollout (requiring thread idle).
+    """
+    if getattr(config, "production_source", None):
+        return observe_pinned_source_artifact(config, observer, pinned=config.production_source)
+
     require_shadow(config)
     path = Path(config.production_rollout_path).resolve(strict=True)
     located = observer.locate_session_file(config.codex.thread_id)
@@ -183,13 +342,39 @@ class ProductionShadow:
             raise ValueError("PRODUCTION_COMPOSER_IDENTITY_MISMATCH")
         return parsed
 
+    async def rebind_source(self, pinned_artifact):
+        """Explicit operator rebinding of the source artifact."""
+        async with self.lock:
+            cfg = await self.config()
+            r = self.load()
+            if not r:
+                raise ValueError("PRODUCTION_SHADOW_RUN_NOT_FOUND")
+            with self.connect() as db:
+                row = db.execute("SELECT send_attempted FROM production_shadow_runs WHERE slot=1").fetchone()
+                if row and row[0]:
+                    raise ValueError("PRODUCTION_C2G_ALREADY_ATTEMPTED")
+            if isinstance(pinned_artifact, dict):
+                from app.models import ProductionSourceArtifact
+                pinned_artifact = ProductionSourceArtifact.model_validate(pinned_artifact)
+            new_source = observe_pinned_source_artifact(cfg, self.observer, pinned=pinned_artifact)
+            r["source"] = new_source
+            r["status"] = "PRODUCTION_SHADOW_BASELINE_VERIFIED"
+            for k in ("payload", "payload_hash", "char_count", "c2g_transfer_id", "payload_preview",
+                      "preview_verdict", "authorization"):
+                r.pop(k, None)
+            self.save(r)
+            return r
+
     async def targets(self):
         cfg = await self.config()
-        return {"thread_id": cfg.codex.thread_id, "workspace": str(Path(cfg.codex.repo_path).resolve()),
-                "expected_branch": cfg.codex.expected_branch, "rollout": cfg.production_rollout_path,
-                "conversation_url": cfg.chatgpt.conversation_url, "conversation_id": cfg.chatgpt.conversation_id,
-                "config_fingerprint": compute_config_fingerprint(cfg), "mode": "PRODUCTION SHADOW",
-                "auto_execution": "OFF", "g2c_queue_permission": "OFF", "manual_authorization": "REQUIRED"}
+        t = {"thread_id": cfg.codex.thread_id, "workspace": str(Path(cfg.codex.repo_path).resolve()),
+             "expected_branch": cfg.codex.expected_branch, "rollout": cfg.production_rollout_path,
+             "conversation_url": cfg.chatgpt.conversation_url, "conversation_id": cfg.chatgpt.conversation_id,
+             "config_fingerprint": compute_config_fingerprint(cfg), "mode": "PRODUCTION SHADOW",
+             "auto_execution": "OFF", "g2c_queue_permission": "OFF", "manual_authorization": "REQUIRED"}
+        if getattr(cfg, "production_source", None):
+            t["production_source"] = cfg.production_source.model_dump()
+        return t
 
     async def baseline(self, fingerprint, targets_confirmed):
         async with self.lock:
@@ -232,10 +417,11 @@ class ProductionShadow:
 
     async def recheck(self, cfg, r):
         source = observe_source(cfg, self.observer)
-        if source != r["source"]:
-            raise ValueError("PRODUCTION_SOURCE_BASELINE_CHANGED")
+        for key in ("assistant_message_id", "user_turn_id", "hash", "text", "completed_at"):
+            if source.get(key) != r["source"].get(key):
+                raise ValueError("PRODUCTION_SOURCE_BASELINE_CHANGED")
         if repository_snapshot(cfg.codex.repo_path) != r["repo_pre"]:
-            r["status"] = "PRODUCTION_REPOSITORY_CHANGED_DURING_SHADOW"
+            r["status"] = "PINNED_SOURCE_STALE_AFTER_REPOSITORY_CHANGE"
             self.save(r)
             raise ValueError(r["status"])
         parsed = await self.page(cfg, ready=True)
@@ -394,8 +580,8 @@ def public_report(record):
     statuses = {"PRODUCTION_SHADOW_BASELINE_VERIFIED", "PRODUCTION C2G PREPARED — NOT SENT",
                 "PRODUCTION_C2G_AUTHORIZED", "PRODUCTION_C2G_DELIVERED", "PRODUCTION_C2G_NOT_SENT",
                 "PRODUCTION_C2G_DELIVERY_UNKNOWN", "PRODUCTION_G2C_PREPARED_FOR_REVIEW",
-                "PRODUCTION_REPOSITORY_CHANGED_DURING_SHADOW", "PLANNER_STOP_REQUESTED",
-                "PLANNER_RESPONSE_AMBIGUOUS", "PLANNER_RESPONSE_ERROR", "PLANNER_NO_ACTIONABLE_PROMPT"}
+                "PRODUCTION_REPOSITORY_CHANGED_DURING_SHADOW", "PINNED_SOURCE_STALE_AFTER_REPOSITORY_CHANGE",
+                "PLANNER_STOP_REQUESTED", "PLANNER_RESPONSE_AMBIGUOUS", "PLANNER_RESPONSE_ERROR", "PLANNER_NO_ACTIONABLE_PROMPT"}
     classifications = {"NEXT_CODEX_PROMPT_FOUND", "PLANNER_STOP_REQUESTED", "PLANNER_RESPONSE_AMBIGUOUS",
                        "PLANNER_RESPONSE_ERROR", "PLANNER_NO_ACTIONABLE_PROMPT"}
     classification = record.get("planner", {}).get("classification")

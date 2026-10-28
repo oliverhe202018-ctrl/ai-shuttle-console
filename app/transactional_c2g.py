@@ -37,10 +37,13 @@ def protocol_binding():
 
 
 def active_production_sessions(workspace, sessions_dir, exclude_thread=None):
-    """Use lifecycle evidence, never age or a swallowed SQLite/index error.
+    """Return quiescence blockers, including UNKNOWN, rather than infer activity.
 
     A missing/unreadable session inventory is UNKNOWN and fails closed. Scan all
     rollouts because the configured session index is JSONL, not a SQLite DB.
+    An unmatched historical start is not proof of current execution or idleness.
+    Without an owning app-server observation it remains UNKNOWN and blocking,
+    even when a different, later turn completed. Recency never resolves it.
     """
     root = Path(sessions_dir)
     if not root.is_dir():
@@ -50,29 +53,49 @@ def active_production_sessions(workspace, sessions_dir, exclude_thread=None):
         with path.open(encoding="utf-8") as stream:
             header = json.loads(stream.readline())
             meta = header.get("payload", {})
-            if header.get("type") != "session_meta":
+            if (header.get("type") != "session_meta" or not isinstance(meta, dict)
+                    or any(not isinstance(meta.get(key), str) or not meta[key] for key in ("id", "cwd"))):
                 raise ValueError("PRODUCTION_SESSION_INVENTORY_UNKNOWN")
             if not same_path(meta.get("cwd", ""), workspace):
                 continue
             if meta.get("id") == exclude_thread:
                 continue
             pending = set()
+            lifecycle_observed = False
+            closed = set()
+            unbound_activity = False
             for line in stream:
                 if not line.strip():
                     continue
-                p = json.loads(line).get("payload", {})
+                record = json.loads(line)
+                p = record.get("payload", {})
                 kind, tid = p.get("type"), p.get("turn_id")
+                if record.get("type") == "turn_context":
+                    if not isinstance(tid, str) or not tid:
+                        raise ValueError("PRODUCTION_SESSION_LIFECYCLE_UNKNOWN")
+                    if tid not in closed:
+                        pending.add(tid)
                 if kind == "task_started":
-                    if not tid:
+                    if not isinstance(tid, str) or not tid:
                         raise ValueError("PRODUCTION_SESSION_LIFECYCLE_UNKNOWN")
+                    lifecycle_observed = True
                     pending.add(tid)
+                    closed.discard(tid)
                 elif kind in ("task_complete", "task_aborted", "turn_aborted"):
-                    if tid:
-                        pending.discard(tid)
-                    elif pending:
+                    if not isinstance(tid, str) or not tid:
                         raise ValueError("PRODUCTION_SESSION_LIFECYCLE_UNKNOWN")
-            if pending:
-                active.append({"thread_id": meta.get("id"), "turn_ids": sorted(pending)})
+                    lifecycle_observed = True
+                    pending.discard(tid)
+                    closed.add(tid)
+                elif kind in ("function_call", "custom_tool_call") and not pending:
+                    # Tool activity without an open turn cannot be attributed to
+                    # an already closed lifecycle. Never silently treat it idle.
+                    unbound_activity = True
+            if pending or not lifecycle_observed or unbound_activity:
+                active.append({"thread_id": meta.get("id"), "turn_ids": sorted(pending),
+                               "classification": "UNKNOWN_LIVENESS",
+                               "reason": ("UNTERMINATED_TURN" if pending else "UNBOUND_TOOL_ACTIVITY"
+                                          if unbound_activity else "LIFECYCLE_NOT_OBSERVED")})
     return active
 
 

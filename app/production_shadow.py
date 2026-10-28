@@ -1,3 +1,4 @@
+import time
 """Phase 2.7: one durable C2G attempt, read-only planner observation, no executor."""
 import asyncio
 import json
@@ -272,6 +273,216 @@ def observe_source(config, observer):
             "session_meta": meta, "rollout_path": str(path)}
 
 
+
+
+def take_checkpoint_snapshot(workspace, active_sessions=None, ignore_patterns=None):
+    """Capture a deterministic checkpoint snapshot of production workspace.
+
+    Includes:
+    - branch
+    - HEAD
+    - Git status porcelain
+    - diff_hash (dirty tracked files)
+    - dirty_file_hashes (per-file content hashes of modified tracked files)
+    - untracked_hashes (hashes of relevant untracked files, skipping holdouts/caches)
+    - active_sessions
+    - timestamp
+    - fingerprint (sha256 of canonical JSON)
+    """
+    def git(*args):
+        env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
+        return subprocess.run(["git", "-C", str(workspace), *args], check=True,
+                              capture_output=True, env=env).stdout
+
+    branch = git("branch", "--show-current").decode().strip()
+    head = git("rev-parse", "HEAD").decode().strip()
+    status_raw = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
+    status_str = os.fsdecode(status_raw)
+    dirty = git("diff", "HEAD", "--binary", "--no-ext-diff", "--no-textconv")
+
+    dirty_files = [p for p in git("diff", "--name-only", "HEAD").decode().splitlines() if p.strip()]
+    dirty_file_hashes = {}
+    for df in dirty_files:
+        fp = Path(workspace) / df
+        if fp.is_file():
+            dirty_file_hashes[df] = compute_sha256(fp.read_bytes().hex())
+
+    untracked_raw = git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0")
+    untracked_hashes = {}
+    for up in untracked_raw:
+        if not up:
+            continue
+        rel = os.fsdecode(up)
+        if any(ignored in rel for ignored in ("__pycache__", ".pytest", ".tmp", "holdout_raw", "FINAL_HOLDOUT")):
+            continue
+        fp = Path(workspace) / rel
+        if fp.is_file():
+            untracked_hashes[rel] = compute_sha256(fp.read_bytes().hex())
+
+    snapshot_data = {
+        "branch": branch,
+        "head": head,
+        "status": status_str,
+        "diff_hash": compute_sha256(dirty.hex()),
+        "dirty_file_hashes": dirty_file_hashes,
+        "untracked_hashes": untracked_hashes,
+        "active_sessions": list(active_sessions or []),
+        "timestamp": now(),
+    }
+
+    fingerprint_canonical = json.dumps({
+        "branch": branch,
+        "head": head,
+        "status": status_str,
+        "diff_hash": snapshot_data["diff_hash"],
+        "dirty_file_hashes": dirty_file_hashes,
+        "untracked_hashes": untracked_hashes,
+    }, sort_keys=True)
+    snapshot_data["fingerprint"] = compute_sha256(fingerprint_canonical)
+    return snapshot_data
+
+
+def check_active_production_sessions(workspace, session_index_path=None, session_dir=None, cutoff_seconds=120):
+    """Check if any production Codex session is currently executing in workspace."""
+    active_sessions = []
+    if session_index_path and Path(session_index_path).exists():
+        try:
+            db = sqlite3.connect(f"{Path(session_index_path).as_uri()}?mode=ro", uri=True)
+            cur = db.cursor()
+            rows = cur.execute("SELECT id, rollout_path, updated_at FROM threads WHERE cwd LIKE ?", (f"%{Path(workspace).name}%",)).fetchall()
+            db.close()
+            now_ts = datetime.now(timezone.utc).timestamp()
+            for tid, rollout, updated_at in rows:
+                if rollout and Path(rollout).exists():
+                    if updated_at and (now_ts - updated_at < cutoff_seconds):
+                        try:
+                            with Path(rollout).open("rb") as f:
+                                f.seek(max(0, Path(rollout).stat().st_size - 10000))
+                                tail = f.read().decode("utf-8", errors="replace")
+                            lines = tail.splitlines()
+                            has_active_call = any("function_call" in l or "task_started" in l for l in lines[-10:])
+                            has_completion = any("task_complete" in l or "turn_aborted" in l for l in lines[-3:])
+                            if has_active_call and not has_completion:
+                                active_sessions.append({"thread_id": tid, "rollout_path": rollout, "updated_at": updated_at})
+                        except Exception:
+                            active_sessions.append({"thread_id": tid, "rollout_path": rollout, "updated_at": updated_at})
+        except Exception:
+            pass
+    return active_sessions
+
+
+def classify_checkpoint_delta(snapshot_a, snapshot_b):
+    """Classify the difference between snapshot A and snapshot B."""
+    if snapshot_a.get("fingerprint") == snapshot_b.get("fingerprint"):
+        return "ATOMIC_PRODUCTION_CHECKPOINT_CAPTURED", []
+
+    if snapshot_a.get("branch") != snapshot_b.get("branch") or snapshot_a.get("head") != snapshot_b.get("head"):
+        return "ATOMIC_HANDOFF_CAPTURE_RACED_WITH_PRODUCTION_CHANGE", [{"reason": "BRANCH_OR_HEAD_CHANGED"}]
+
+    a_dirty = snapshot_a.get("dirty_file_hashes", {})
+    b_dirty = snapshot_b.get("dirty_file_hashes", {})
+    a_untracked = snapshot_a.get("untracked_hashes", {})
+    b_untracked = snapshot_b.get("untracked_hashes", {})
+
+    all_keys = set(a_dirty.keys()) | set(b_dirty.keys()) | set(a_untracked.keys()) | set(b_untracked.keys())
+    changed_paths = []
+    for k in all_keys:
+        ha = a_dirty.get(k) or a_untracked.get(k)
+        hb = b_dirty.get(k) or b_untracked.get(k)
+        if ha != hb:
+            changed_paths.append(k)
+
+    if not changed_paths:
+        return "ATOMIC_PRODUCTION_CHECKPOINT_CAPTURED", []
+
+    material = []
+    non_semantic = []
+    unknown = []
+
+    for p in changed_paths:
+        normalized = p.replace("\\", "/").lower()
+        if any(normalized.endswith(ext) for ext in (".log", ".tmp", ".txt.log")) or "private-reports" in normalized or "telemetry" in normalized:
+            non_semantic.append(p)
+        elif any(normalized.startswith(prefix) for prefix in ("src/", "device/", "rules/", "dist/")) or normalized.endswith((".py", ".java", ".apk", ".idsig")):
+            material.append(p)
+        elif "build_manifest.json" in normalized or "contract" in normalized:
+            material.append(p)
+        else:
+            unknown.append(p)
+
+    if material or unknown:
+        return "ATOMIC_HANDOFF_CAPTURE_RACED_WITH_PRODUCTION_CHANGE", {
+            "material": material,
+            "unknown": unknown,
+            "non_semantic": non_semantic,
+        }
+
+    return "ATOMIC_PRODUCTION_CHECKPOINT_SEMANTICALLY_STABLE", {
+        "non_semantic": non_semantic,
+    }
+
+
+def audit_handoff_thread_side_effects(snapshot_a, snapshot_b, rollout_records=None):
+    """Verify production mutation counts for the handoff thread."""
+    if snapshot_a.get("head") != snapshot_b.get("head"):
+        raise ValueError("ATOMIC_HANDOFF_READONLY_VIOLATION: commit count > 0")
+    if snapshot_a.get("branch") != snapshot_b.get("branch"):
+        raise ValueError("ATOMIC_HANDOFF_READONLY_VIOLATION: branch changed")
+
+    a_hashes = {**snapshot_a.get("dirty_file_hashes", {}), **snapshot_a.get("untracked_hashes", {})}
+    b_hashes = {**snapshot_b.get("dirty_file_hashes", {}), **snapshot_b.get("untracked_hashes", {})}
+
+    for path, b_hash in b_hashes.items():
+        if a_hashes.get(path) != b_hash:
+            norm = path.replace("\\", "/").lower()
+            if any(norm.startswith(pfx) for pfx in ("src/", "device/", "tests/")) or norm.endswith((".py", ".java")):
+                raise ValueError(f"ATOMIC_HANDOFF_READONLY_VIOLATION: write to {path}")
+            if "build_manifest" in norm or norm.endswith(".apk"):
+                raise ValueError(f"ATOMIC_HANDOFF_READONLY_VIOLATION: build output {path}")
+
+    if rollout_records:
+        for rec in rollout_records:
+            p = rec.get("payload", {})
+            if rec.get("type") == "response_item" and p.get("type") == "function_call":
+                args = str(p.get("arguments", "")).lower()
+                name = str(p.get("name", ""))
+                if "apply_patch" in name:
+                    raise ValueError("ATOMIC_HANDOFF_READONLY_VIOLATION: apply_patch called")
+                if "git commit" in args or "git push" in args or "git checkout" in args:
+                    raise ValueError(f"ATOMIC_HANDOFF_READONLY_VIOLATION: git mutation {args}")
+                if "build_apk" in args:
+                    raise ValueError("ATOMIC_HANDOFF_READONLY_VIOLATION: build_apk called")
+
+
+def build_handoff_instruction_prompt():
+    return (
+        "# Production Handoff Generation Request (STRICTLY READ-ONLY)\n\n"
+        "Inspect the current production repository and produce ONE authoritative current-state handoff.\n"
+        "STRICT CONSTRAINTS:\n"
+        "- Read-only inspection only: zero source/test/Git writes, no commits, no training, no APK build, no service start, no phone state change, no report file creation.\n"
+        "- The FINAL ANSWER in this turn is the sole deliverable.\n"
+        "- The final answer must conclude with the terminal marker: FRESH_PRODUCTION_HANDOFF_READY.\n\n"
+        "CONTENT REQUIREMENTS:\n"
+        "1. Current project objective (Shaoyang Bopi Zipai mobile AI assistant).\n"
+        "2. Current branch/HEAD/dirty repository state.\n"
+        "3. Frozen B1_6 and protected invariants/holdouts.\n"
+        "4. Clone/rule contract repairs.\n"
+        "5. Decision-quality / teacher / learning research status.\n"
+        "6. Human calibration status.\n"
+        "7. Android thin client and remote recommendation service status.\n"
+        "8. APK / build / runtime integrity.\n"
+        "9. PlatformSceneDetector and later scene-state work.\n"
+        "10. Current Compact Overlay behavior and real-device deployment status.\n"
+        "11. Current visual/tracker architecture.\n"
+        "12. Evidence boundaries and operator prerequisites.\n"
+        "13. Superseded conclusions.\n"
+        "14. ONE immediate next engineering step.\n"
+        "15. Verification of the primary blocker:\n"
+        "    'real phone frame -> vision -> VisualCandidateEvent -> VisualGameStateTracker / legal observation -> recommendation -> Android rendering'.\n"
+        "16. Terminal marker: FRESH_PRODUCTION_HANDOFF_READY."
+    )
+
+
 class ProductionShadow:
     """No queue/lifecycle adapter is accepted by this coordinator.
 
@@ -356,6 +567,12 @@ class ProductionShadow:
             if isinstance(pinned_artifact, dict):
                 from app.models import ProductionSourceArtifact
                 pinned_artifact = ProductionSourceArtifact.model_validate(pinned_artifact)
+            cfg.production_source = pinned_artifact
+            cfg.codex.thread_id = pinned_artifact.thread_id
+            if pinned_artifact.rollout_path:
+                cfg.production_rollout_path = pinned_artifact.rollout_path
+            if cfg.protected_targets and hasattr(cfg.protected_targets, "thread_id"):
+                cfg.protected_targets.thread_id = pinned_artifact.thread_id
             new_source = observe_pinned_source_artifact(cfg, self.observer, pinned=pinned_artifact)
             r["source"] = new_source
             r["status"] = "PRODUCTION_SHADOW_BASELINE_VERIFIED"
@@ -573,6 +790,198 @@ class ProductionShadow:
             r["completed_at"] = now()
             self.save(r)
             return r
+
+
+    async def capture_atomic_checkpoint(self, app_server_manager=None, custom_prompt=None, active_session_checker=None, skip_chatgpt_check=False, max_wait_seconds=180, poll_interval=1.0):
+        """Execute Phase 2.7.0.2 Atomic Production Checkpoint Handoff Capture."""
+        cfg = await self.config()
+        workspace = Path(cfg.codex.repo_path).resolve()
+
+        # 1. Active Production Work Gate
+        checker = active_session_checker or check_active_production_sessions
+        active_sessions = checker(workspace, session_index_path=cfg.codex.session_index_path)
+        if active_sessions:
+            return {
+                "status": "PRODUCTION_CHECKPOINT_NOT_QUIESCENT",
+                "active_sessions": active_sessions,
+                "send_count": 0,
+                "send_eligible": False,
+            }
+
+        # 2. Capture Snapshot A
+        snapshot_a = take_checkpoint_snapshot(workspace, active_sessions=active_sessions)
+
+        # 3. Dedicated Handoff Thread & Turn via App-Server
+        if not app_server_manager:
+            raise ValueError("APP_SERVER_MANAGER_REQUIRED_FOR_ATOMIC_CAPTURE")
+
+        thread_res = await app_server_manager.start_thread(
+            cwd=str(workspace),
+            title="Phase 2.7.0.2 Atomic Handoff Capture",
+            experimental_api=False,
+        )
+        thread_id = (thread_res.get("thread", {}) or {}).get("id") or thread_res.get("threadId") or thread_res.get("id")
+        if not thread_id:
+            raise ValueError("FAILED_TO_START_HANDOFF_THREAD")
+
+        prompt = custom_prompt or build_handoff_instruction_prompt()
+        await app_server_manager.start_turn(thread_id=thread_id, prompt=prompt)
+
+        rollout_file = None
+        records = []
+        final_text = None
+        assistant_message_id = None
+        user_turn_id = None
+        user_message_id = None
+        completed_at = None
+        final_line = None
+
+        start_wait = time.time()
+        while True:
+            rollout_file = self.observer.locate_session_file(thread_id)
+            if rollout_file and Path(rollout_file).exists():
+                try:
+                    with Path(rollout_file).open(encoding="utf-8") as f:
+                        records = [json.loads(line) for line in f if line.strip()]
+                    for idx_rec, r in enumerate(records):
+                        pld = r.get("payload", {})
+                        if r.get("type") == "response_item" and pld.get("role") == "assistant" and pld.get("phase") == "final_answer":
+                            content_val = pld.get("content")
+                            final_text = content_val if isinstance(content_val, str) else "".join(
+                                c["text"] for c in content_val or [] if c.get("type") == "output_text")
+                            assistant_message_id = pld.get("id")
+                            final_line = idx_rec
+                        if pld.get("type") == "user_message" or (pld.get("type") == "message" and pld.get("role") == "user"):
+                            user_turn_id = pld.get("turn_id")
+                            user_message_id = pld.get("id")
+                        if pld.get("type") == "task_complete":
+                            completed_at = r.get("timestamp")
+                except Exception:
+                    pass
+
+                if final_text and assistant_message_id and completed_at:
+                    break
+
+            if time.time() - start_wait > max_wait_seconds:
+                break
+            await asyncio.sleep(poll_interval)
+
+        if not rollout_file or not Path(rollout_file).exists():
+            raise ValueError("HANDOFF_THREAD_ROLLOUT_NOT_FOUND")
+
+        if not final_text or not assistant_message_id or not completed_at:
+            return {
+                "status": "PHASE_2_7_ATOMIC_CAPTURE_IMPLEMENTATION_BLOCKED",
+                "reason": "HANDOFF_FINAL_INCOMPLETE",
+                "send_count": 0,
+                "send_eligible": False,
+            }
+
+        if not final_text.strip().endswith("FRESH_PRODUCTION_HANDOFF_READY"):
+            return {
+                "status": "PHASE_2_7_ATOMIC_CAPTURE_IMPLEMENTATION_BLOCKED",
+                "reason": "TERMINAL_MARKER_MISSING",
+                "send_count": 0,
+                "send_eligible": False,
+            }
+
+        # 4. Capture Snapshot B
+        snapshot_b = take_checkpoint_snapshot(workspace)
+
+        # 5. Audit Handoff Thread Side Effects
+        try:
+            audit_handoff_thread_side_effects(snapshot_a, snapshot_b, rollout_records=records)
+        except ValueError as exc:
+            return {
+                "status": "ATOMIC_HANDOFF_READONLY_VIOLATION",
+                "reason": str(exc),
+                "send_count": 0,
+                "send_eligible": False,
+            }
+
+        # 6. Compare Snapshot A and B
+        delta_status, delta_details = classify_checkpoint_delta(snapshot_a, snapshot_b)
+        if delta_status == "ATOMIC_HANDOFF_CAPTURE_RACED_WITH_PRODUCTION_CHANGE":
+            return {
+                "status": "ATOMIC_HANDOFF_CAPTURE_RACED_WITH_PRODUCTION_CHANGE",
+                "delta_details": delta_details,
+                "send_count": 0,
+                "send_eligible": False,
+            }
+
+        # 7. Pin New Artifact
+        from app.models import ProductionSourceArtifact
+        new_source_artifact = ProductionSourceArtifact(
+            thread_id=thread_id,
+            user_turn_id=user_turn_id,
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+            completed_at=completed_at,
+            rollout_line=final_line,
+            sha256=compute_sha256(final_text),
+            char_count=len(final_text),
+            rollout_path=str(rollout_file),
+            expected_marker="FRESH_PRODUCTION_HANDOFF_READY",
+        )
+
+        cfg.production_source = new_source_artifact
+        cfg.codex.thread_id = thread_id
+        cfg.production_rollout_path = str(rollout_file)
+        if cfg.protected_targets and hasattr(cfg.protected_targets, "thread_id"):
+            cfg.protected_targets.thread_id = thread_id
+
+        observed_source = observe_pinned_source_artifact(cfg, self.observer, pinned=new_source_artifact)
+
+        current_run = self.load()
+        if not current_run:
+            current_run = {
+                "shadow_run_id": "shadow-" + secrets.token_hex(12),
+                "config_fingerprint": compute_config_fingerprint(cfg),
+                "targets": await self.targets(),
+                "source": observed_source,
+                "chatgpt_baseline": {"ready": True, "url": cfg.chatgpt.conversation_url},
+                "repo_pre": snapshot_a,
+                "started_at": now(),
+                "status": "PRODUCTION_SHADOW_BASELINE_VERIFIED",
+                "c2g_send_attempts": 0, "c2g_delivered_count": 0,
+                "codex_queue_submissions": 0, "codex_executions": 0, "thread_resume_calls": 0,
+            }
+            self.save(current_run, create=True)
+        else:
+            await self.rebind_source(new_source_artifact)
+            current_run = self.load()
+
+        # 8. Passively verify ChatGPT Target
+        if not skip_chatgpt_check:
+            parsed_page = await self.page(cfg, ready=True)
+            if parsed_page.get("is_streaming"):
+                raise ValueError("PRODUCTION_CHATGPT_NOT_IDLE")
+
+        # 9. Prepare C2G Preview
+        payload = ProductionShuttlePayloadStrategy().build_c2g_payload(current_run["shadow_run_id"], 1, "", 1, final_text)
+        current_run.update(payload=payload, payload_hash=compute_sha256(payload), char_count=len(payload),
+                           c2g_transfer_id="production-c2g-" + secrets.token_hex(12),
+                           payload_preview={"first": payload[:160], "last": payload[-160:]},
+                           payload_rewrite="NONE", status="PRODUCTION C2G PREPARED — NOT SENT",
+                           preview_verdict="PRODUCTION_C2G_PREVIEW_VERIFIED")
+        self.integrity(current_run)
+        self.save(current_run)
+
+        # 10. Final Freshness Check
+        active_after = checker(workspace, session_index_path=cfg.codex.session_index_path)
+        freshness_status = "PRODUCTION_CHECKPOINT_CURRENT" if not active_after else "PRODUCTION_CHECKPOINT_NO_LONGER_CURRENT"
+
+        return {
+            "checkpoint_status": delta_status,
+            "status": "PHASE_2_7_LIVE_SHADOW_PRECHECK_READY" if freshness_status == "PRODUCTION_CHECKPOINT_CURRENT" else freshness_status,
+            "pinned_artifact": new_source_artifact.model_dump(),
+            "preview_verdict": "PRODUCTION_C2G_PREVIEW_VERIFIED",
+            "chatgpt_target_status": "PRODUCTION_CHATGPT_TARGET_READY",
+            "final_freshness": freshness_status,
+            "send_count": 0,
+            "send_eligible": False,
+        }
+
 
 
 def public_report(record):

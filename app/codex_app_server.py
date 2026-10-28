@@ -377,6 +377,28 @@ class CodexThreadLifecycleAdapter:
 
         return res
 
+    async def start_thread(self, cwd: str, title: Optional[str] = None, experimental_api: bool = False) -> dict:
+        """Start a new persistent thread via official `thread/start` API."""
+        params: Dict[str, Any] = {"cwd": cwd, "experimentalApi": experimental_api}
+        if title:
+            params["title"] = title
+        res = await self.rpc_client.call("thread/start", params)
+        if not isinstance(res, dict):
+            raise CodexAppServerError(f"Invalid thread/start response format: {res}")
+        return res
+
+    async def start_turn(self, thread_id: str, prompt: str) -> dict:
+        """Execute exactly one turn via official `turn/start` API."""
+        if not thread_id:
+            raise ValueError("Thread ID cannot be empty")
+        res = await self.rpc_client.call("turn/start", {
+            "threadId": thread_id,
+            "input": [{"type": "text", "text": prompt}],
+        })
+        if not isinstance(res, dict):
+            raise CodexAppServerError(f"Invalid turn/start response format: {res}")
+        return res
+
 
 class CodexAppServerManager:
     """High-level singleton manager for the Codex app-server lifecycle."""
@@ -423,6 +445,15 @@ class CodexAppServerManager:
 
     async def check_human_actions(self) -> List[Dict[str, Any]]:
         return self.adapter.pop_human_actions()
+
+
+    async def start_thread(self, cwd: str, title: Optional[str] = None, experimental_api: bool = False) -> dict:
+        await self.ensure_started()
+        return await self.adapter.start_thread(cwd=cwd, title=title, experimental_api=experimental_api)
+
+    async def start_turn(self, thread_id: str, prompt: str) -> dict:
+        await self.ensure_started()
+        return await self.adapter.start_turn(thread_id=thread_id, prompt=prompt)
 
     async def shutdown(self) -> None:
         self.initialized = False

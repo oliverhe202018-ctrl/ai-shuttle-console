@@ -325,7 +325,11 @@ def test_successful_readonly_preflight(tmp_path):
 @pytest.mark.asyncio
 async def test_human_action_state_and_console_api():
     transport = ASGITransport(app=app)
-    with patch("app.canary_bootstrap.discover_codex_canary_target") as mock_disc:
+    with patch("app.canary_bootstrap.check_or_launch_canary_edge") as mock_edge, \
+         patch("app.canary_bootstrap.inspect_chatgpt_canary", new_callable=AsyncMock) as mock_chat, \
+         patch("app.canary_bootstrap.discover_codex_canary_target") as mock_disc:
+        mock_edge.return_value = {"status": "reused", "profile_dir": str(CANARY_PROFILE), "cdp_url": "http://127.0.0.1:9223"}
+        mock_chat.return_value = {"status": "discovered", "conversation_id": "test-cid", "conversation_url": "https://chatgpt.com/c/test-cid"}
         mock_disc.return_value = {
             "status": HUMAN_ACTION_REQUIRED_CREATE_CODEX_CANARY_THREAD,
             "workspace": str(CANARY_WORKSPACE.resolve()),

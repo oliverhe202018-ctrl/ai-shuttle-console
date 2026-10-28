@@ -14,7 +14,7 @@ from app.auto_mode import AutoModeCoordinator, ProductionShuttlePayloadStrategy
 from app.canary import compute_config_fingerprint
 from app.canonical import compute_semantic_hash
 from app.models import AppConfig, ProductionSourceArtifact, compute_sha256
-from app.production_shadow import ProductionShadow, observe_source, observe_pinned_source_artifact, public_report, repository_snapshot, require_shadow
+from app.production_shadow import (ProductionShadow, observe_source, observe_pinned_source_artifact, public_report, repository_snapshot, require_shadow, take_checkpoint_snapshot, check_active_production_sessions, classify_checkpoint_delta, audit_handoff_thread_side_effects, build_handoff_instruction_prompt)
 
 THREAD = "11111111-1111-4111-8111-111111111111"
 CONVERSATION = "22222222-2222-4222-8222-222222222222"
@@ -661,3 +661,315 @@ def test_real_ids_stay_out_of_public_repository():
                 continue
             for secret in forbidden:
                 assert secret not in text, f"Private token found in tracked file {rel_path}"
+
+
+
+# ==============================================================================
+# Phase 2.7.0.2: 15 Focused Tests for Atomic Checkpoint Handoff Capture
+# ==============================================================================
+
+class MockAppServerManager:
+    def __init__(self, thread_id="33333333-3333-4333-8333-333333333333"):
+        self.thread_id = thread_id
+        self.calls = []
+
+    async def start_thread(self, cwd, title=None, experimental_api=False):
+        self.calls.append(("start_thread", cwd, title, experimental_api))
+        return {"thread": {"id": self.thread_id, "cwd": cwd}}
+
+    async def start_turn(self, thread_id, prompt):
+        self.calls.append(("start_turn", thread_id, prompt))
+        return {"turn": {"id": "turn-test-1", "threadId": thread_id}}
+
+
+def create_handoff_rollout(path, thread_id, cwd, final_text, assistant_id="new-assistant", user_turn="turn-test-1", completed=True):
+    records = [
+        {"type": "session_meta", "payload": {"id": thread_id, "cwd": str(cwd)}},
+        {"type": "turn_context", "payload": {"turn_id": user_turn}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "Handoff prompt", "turn_id": user_turn, "id": "msg-u-1"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer",
+         "id": assistant_id, "turn_id": user_turn, "content": [{"type": "output_text", "text": final_text}]}},
+    ]
+    if completed:
+        records.append({"type": "event_msg", "timestamp": "2026-01-03T12:00:00Z", "payload": {"type": "task_complete", "turn_id": user_turn}})
+    with Path(path).open("w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+
+
+@pytest.mark.asyncio
+async def test_atomic_capture_1_active_production_task_blocks_capture(env):
+    mock_mgr = MockAppServerManager()
+    active_checker = lambda ws, **kw: [{"thread_id": "active-thread-1", "reason": "ACTIVE_RUNNING_TURN"}]
+    res = await env["service"].capture_atomic_checkpoint(
+        app_server_manager=mock_mgr,
+        active_session_checker=active_checker,
+        skip_chatgpt_check=True,
+    )
+    assert res["status"] == "PRODUCTION_CHECKPOINT_NOT_QUIESCENT"
+    assert res["send_count"] == 0
+    assert len(mock_mgr.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_atomic_capture_2_dirty_but_stable_repo_allowed(env, tmp_path):
+    ws = Path(env["cfg"].codex.repo_path)
+    (ws / "dirty_tracked.txt").write_text("modified dirty content", encoding="utf-8")
+    (ws / "untracked_new.txt").write_text("new untracked file", encoding="utf-8")
+    
+    handoff_tid = "44444444-4444-4444-8444-444444444444"
+    rollout_path = Path(env["cfg"].codex.session_index_path).parent / f"rollout-{handoff_tid}.jsonl"
+    final_text = "Verified clean handoff text\nFRESH_PRODUCTION_HANDOFF_READY"
+    create_handoff_rollout(rollout_path, handoff_tid, ws, final_text)
+
+    env["observer"].locate_session_file = MagicMock(side_effect=lambda tid: str(rollout_path) if str(tid) == str(handoff_tid) else str(env["rollout"]))
+    env["observer"].validate_session_metadata = MagicMock(return_value={"found_in_index": True, "validation_errors": []})
+
+    mock_mgr = MockAppServerManager(thread_id=handoff_tid)
+    res = await env["service"].capture_atomic_checkpoint(
+        app_server_manager=mock_mgr,
+        active_session_checker=lambda ws, **kw: [],
+        skip_chatgpt_check=True,
+    )
+    assert res["checkpoint_status"] == "ATOMIC_PRODUCTION_CHECKPOINT_CAPTURED"
+    assert res["send_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_atomic_capture_3_thread_start_followed_immediately_by_first_turn(env):
+    handoff_tid = "55555555-5555-4555-8555-555555555555"
+    rollout_path = Path(env["cfg"].codex.session_index_path).parent / f"rollout-{handoff_tid}.jsonl"
+    final_text = "Handoff result\nFRESH_PRODUCTION_HANDOFF_READY"
+    create_handoff_rollout(rollout_path, handoff_tid, env["cfg"].codex.repo_path, final_text)
+
+    env["observer"].locate_session_file = MagicMock(side_effect=lambda tid: str(rollout_path) if str(tid) == str(handoff_tid) else str(env["rollout"]))
+    env["observer"].validate_session_metadata = MagicMock(return_value={"found_in_index": True, "validation_errors": []})
+
+    mock_mgr = MockAppServerManager(thread_id=handoff_tid)
+    await env["service"].capture_atomic_checkpoint(
+        app_server_manager=mock_mgr,
+        active_session_checker=lambda ws, **kw: [],
+        skip_chatgpt_check=True,
+    )
+    assert len(mock_mgr.calls) == 2
+    assert mock_mgr.calls[0][0] == "start_thread"
+    assert mock_mgr.calls[0][3] is False  # experimentalApi is False
+    assert mock_mgr.calls[1][0] == "start_turn"
+    assert mock_mgr.calls[1][1] == handoff_tid
+
+
+@pytest.mark.asyncio
+async def test_atomic_capture_4_handoff_thread_read_only_contract(env):
+    prompt = build_handoff_instruction_prompt()
+    assert "STRICTLY READ-ONLY" in prompt
+    assert "FRESH_PRODUCTION_HANDOFF_READY" in prompt
+    assert "zero source/test/Git writes" in prompt
+
+    snap_a = {"head": "h1", "branch": "b1", "dirty_file_hashes": {}, "untracked_hashes": {}}
+    snap_b = {"head": "h1", "branch": "b1", "dirty_file_hashes": {"src/modified.py": "hash2"}, "untracked_hashes": {}}
+    with pytest.raises(ValueError, match="ATOMIC_HANDOFF_READONLY_VIOLATION"):
+        audit_handoff_thread_side_effects(snap_a, snap_b)
+
+
+@pytest.mark.asyncio
+async def test_atomic_capture_5_snapshot_exact_match_passes():
+    snap_a = {"fingerprint": "abc", "head": "h1", "branch": "b1", "dirty_file_hashes": {}, "untracked_hashes": {}}
+    snap_b = {"fingerprint": "abc", "head": "h1", "branch": "b1", "dirty_file_hashes": {}, "untracked_hashes": {}}
+    status, details = classify_checkpoint_delta(snap_a, snap_b)
+    assert status == "ATOMIC_PRODUCTION_CHECKPOINT_CAPTURED"
+    assert details == []
+
+
+@pytest.mark.asyncio
+async def test_atomic_capture_6_material_delta_blocks():
+    snap_a = {"fingerprint": "a", "head": "h1", "branch": "b1", "dirty_file_hashes": {"src/server.py": "1"}, "untracked_hashes": {}}
+    snap_b = {"fingerprint": "b", "head": "h1", "branch": "b1", "dirty_file_hashes": {"src/server.py": "2"}, "untracked_hashes": {}}
+    status, details = classify_checkpoint_delta(snap_a, snap_b)
+    assert status == "ATOMIC_HANDOFF_CAPTURE_RACED_WITH_PRODUCTION_CHANGE"
+    assert "src/server.py" in details["material"]
+
+
+@pytest.mark.asyncio
+async def test_atomic_capture_7_unknown_delta_blocks():
+    snap_a = {"fingerprint": "a", "head": "h1", "branch": "b1", "dirty_file_hashes": {}, "untracked_hashes": {}}
+    snap_b = {"fingerprint": "b", "head": "h1", "branch": "b1", "dirty_file_hashes": {}, "untracked_hashes": {"some_unknown_asset.bin": "1"}}
+    status, details = classify_checkpoint_delta(snap_a, snap_b)
+    assert status == "ATOMIC_HANDOFF_CAPTURE_RACED_WITH_PRODUCTION_CHANGE"
+    assert "some_unknown_asset.bin" in details["unknown"]
+
+
+@pytest.mark.asyncio
+async def test_atomic_capture_8_non_semantic_delta_may_pass():
+    snap_a = {"fingerprint": "a", "head": "h1", "branch": "b1", "dirty_file_hashes": {}, "untracked_hashes": {"runtime.log": "1"}}
+    snap_b = {"fingerprint": "b", "head": "h1", "branch": "b1", "dirty_file_hashes": {}, "untracked_hashes": {"runtime.log": "2"}}
+    status, details = classify_checkpoint_delta(snap_a, snap_b)
+    assert status == "ATOMIC_PRODUCTION_CHECKPOINT_SEMANTICALLY_STABLE"
+    assert "runtime.log" in details["non_semantic"]
+
+
+@pytest.mark.asyncio
+async def test_atomic_capture_9_failed_capture_does_not_rebind_source(env):
+    ws = Path(env["cfg"].codex.repo_path)
+    prior_pinned = make_pinned_artifact(text=OUTPUT)
+    env["cfg"].production_source = prior_pinned
+    s = env["service"]
+    await s.baseline(compute_config_fingerprint(env["cfg"]), True)
+    
+    mock_mgr = MockAppServerManager()
+    active_checker = lambda ws, **kw: [{"thread_id": "active-1", "reason": "BUSY"}]
+    res = await s.capture_atomic_checkpoint(
+        app_server_manager=mock_mgr,
+        active_session_checker=active_checker,
+        skip_chatgpt_check=True,
+    )
+    assert res["status"] == "PRODUCTION_CHECKPOINT_NOT_QUIESCENT"
+    # Prior source remains intact
+    assert s.load()["source"]["assistant_message_id"] == prior_pinned.assistant_message_id
+
+
+@pytest.mark.asyncio
+async def test_atomic_capture_10_successful_capture_pins_exact_artifact(env):
+    handoff_tid = "66666666-6666-4666-8666-666666666666"
+    rollout_path = Path(env["cfg"].codex.session_index_path).parent / f"rollout-{handoff_tid}.jsonl"
+    final_text = "Authoritative new handoff\nFRESH_PRODUCTION_HANDOFF_READY"
+    create_handoff_rollout(rollout_path, handoff_tid, env["cfg"].codex.repo_path, final_text, assistant_id="asst-66")
+
+    env["observer"].locate_session_file = MagicMock(side_effect=lambda tid: str(rollout_path) if str(tid) == str(handoff_tid) else str(env["rollout"]))
+    env["observer"].validate_session_metadata = MagicMock(return_value={"found_in_index": True, "validation_errors": []})
+
+    s = env["service"]
+    env["cfg"].production_source = make_pinned_artifact(text=OUTPUT)
+    await s.baseline(compute_config_fingerprint(env["cfg"]), True)
+
+    mock_mgr = MockAppServerManager(thread_id=handoff_tid)
+    res = await s.capture_atomic_checkpoint(
+        app_server_manager=mock_mgr,
+        active_session_checker=lambda ws, **kw: [],
+        skip_chatgpt_check=True,
+    )
+    assert res["pinned_artifact"]["assistant_message_id"] == "asst-66"
+    assert res["pinned_artifact"]["sha256"] == compute_sha256(final_text)
+    assert s.load()["source"]["assistant_message_id"] == "asst-66"
+
+
+@pytest.mark.asyncio
+async def test_atomic_capture_11_pinned_artifact_used_for_preview(env):
+    handoff_tid = "77777777-7777-4777-8777-777777777777"
+    rollout_path = Path(env["cfg"].codex.session_index_path).parent / f"rollout-{handoff_tid}.jsonl"
+    final_text = "Pinned for preview verification\nFRESH_PRODUCTION_HANDOFF_READY"
+    create_handoff_rollout(rollout_path, handoff_tid, env["cfg"].codex.repo_path, final_text, assistant_id="asst-77")
+
+    env["observer"].locate_session_file = MagicMock(side_effect=lambda tid: str(rollout_path) if str(tid) == str(handoff_tid) else str(env["rollout"]))
+    env["observer"].validate_session_metadata = MagicMock(return_value={"found_in_index": True, "validation_errors": []})
+
+    s = env["service"]
+    env["cfg"].production_source = make_pinned_artifact(text=OUTPUT)
+    await s.baseline(compute_config_fingerprint(env["cfg"]), True)
+
+    mock_mgr = MockAppServerManager(thread_id=handoff_tid)
+    res = await s.capture_atomic_checkpoint(
+        app_server_manager=mock_mgr,
+        active_session_checker=lambda ws, **kw: [],
+        skip_chatgpt_check=True,
+    )
+    loaded = s.load()
+    assert loaded["preview_verdict"] == "PRODUCTION_C2G_PREVIEW_VERIFIED"
+    assert loaded["payload"] == final_text
+    assert loaded["payload_hash"] == compute_sha256(final_text)
+    assert loaded["payload_rewrite"] == "NONE"
+
+
+@pytest.mark.asyncio
+async def test_atomic_capture_12_later_handoff_thread_final_cannot_replace_pin(env):
+    handoff_tid = "88888888-8888-4888-8888-888888888888"
+    rollout_path = Path(env["cfg"].codex.session_index_path).parent / f"rollout-{handoff_tid}.jsonl"
+    final_text = "Pinned handoff 88\nFRESH_PRODUCTION_HANDOFF_READY"
+    create_handoff_rollout(rollout_path, handoff_tid, env["cfg"].codex.repo_path, final_text, assistant_id="asst-88")
+
+    env["observer"].locate_session_file = MagicMock(side_effect=lambda tid: str(rollout_path) if str(tid) == str(handoff_tid) else str(env["rollout"]))
+    env["observer"].validate_session_metadata = MagicMock(return_value={"found_in_index": True, "validation_errors": []})
+
+    s = env["service"]
+    env["cfg"].production_source = make_pinned_artifact(text=OUTPUT)
+    await s.baseline(compute_config_fingerprint(env["cfg"]), True)
+
+    mock_mgr = MockAppServerManager(thread_id=handoff_tid)
+    await s.capture_atomic_checkpoint(
+        app_server_manager=mock_mgr,
+        active_session_checker=lambda ws, **kw: [],
+        skip_chatgpt_check=True,
+    )
+
+    # Later turn added to rollout
+    newer_records = [
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-late"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer",
+         "id": "asst-late", "content": [{"type": "output_text", "text": "Intruder final\nFRESH_PRODUCTION_HANDOFF_READY"}]}},
+        {"type": "event_msg", "timestamp": "2026-01-04T00:00:00Z", "payload": {"type": "task_complete", "turn_id": "turn-late"}},
+    ]
+    with Path(rollout_path).open("a", encoding="utf-8") as f:
+        for r in newer_records:
+            f.write(json.dumps(r) + "\n")
+
+    # Observation still retrieves exact pinned artifact
+    loaded = s.load()
+    assert loaded["source"]["assistant_message_id"] == "asst-88"
+    assert loaded["source"]["text"] == final_text
+
+
+@pytest.mark.asyncio
+async def test_atomic_capture_13_chatgpt_remains_unsent(env):
+    handoff_tid = "99999999-9999-4999-8999-999999999999"
+    rollout_path = Path(env["cfg"].codex.session_index_path).parent / f"rollout-{handoff_tid}.jsonl"
+    final_text = "Handoff 99\nFRESH_PRODUCTION_HANDOFF_READY"
+    create_handoff_rollout(rollout_path, handoff_tid, env["cfg"].codex.repo_path, final_text, assistant_id="asst-99")
+
+    env["observer"].locate_session_file = MagicMock(side_effect=lambda tid: str(rollout_path) if str(tid) == str(handoff_tid) else str(env["rollout"]))
+    env["observer"].validate_session_metadata = MagicMock(return_value={"found_in_index": True, "validation_errors": []})
+
+    s = env["service"]
+    env["cfg"].production_source = make_pinned_artifact(text=OUTPUT)
+    await s.baseline(compute_config_fingerprint(env["cfg"]), True)
+
+    mock_mgr = MockAppServerManager(thread_id=handoff_tid)
+    res = await s.capture_atomic_checkpoint(
+        app_server_manager=mock_mgr,
+        active_session_checker=lambda ws, **kw: [],
+        skip_chatgpt_check=True,
+    )
+    assert res["send_count"] == 0
+    assert env["sender"].send_message.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_atomic_capture_14_restart_preserves_successful_atomic_checkpoint(env):
+    handoff_tid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    rollout_path = Path(env["cfg"].codex.session_index_path).parent / f"rollout-{handoff_tid}.jsonl"
+    final_text = "Surviving handoff\nFRESH_PRODUCTION_HANDOFF_READY"
+    create_handoff_rollout(rollout_path, handoff_tid, env["cfg"].codex.repo_path, final_text, assistant_id="asst-aa")
+
+    env["observer"].locate_session_file = MagicMock(side_effect=lambda tid: str(rollout_path) if str(tid) == str(handoff_tid) else str(env["rollout"]))
+    env["observer"].validate_session_metadata = MagicMock(return_value={"found_in_index": True, "validation_errors": []})
+
+    s = env["service"]
+    env["cfg"].production_source = make_pinned_artifact(text=OUTPUT)
+    await s.baseline(compute_config_fingerprint(env["cfg"]), True)
+
+    mock_mgr = MockAppServerManager(thread_id=handoff_tid)
+    await s.capture_atomic_checkpoint(
+        app_server_manager=mock_mgr,
+        active_session_checker=lambda ws, **kw: [],
+        skip_chatgpt_check=True,
+    )
+
+    db_path = s.path
+    restarted = ProductionShadow(db_path, AsyncMock(return_value=env["cfg"]), env["observer"], env["browser"], env["sender"])
+    loaded = restarted.load()
+    assert loaded["source"]["assistant_message_id"] == "asst-aa"
+    assert loaded["payload"] == final_text
+    assert loaded["preview_verdict"] == "PRODUCTION_C2G_PREVIEW_VERIFIED"
+
+
+def test_atomic_capture_15_private_ids_remain_untracked():
+    # Invoke comprehensive public sanitization check
+    test_real_ids_stay_out_of_public_repository()

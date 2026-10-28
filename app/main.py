@@ -291,6 +291,7 @@ async def lifespan(app: FastAPI):
 
     if config and config.production_shadow_mode:
         from app.transactional_c2g import TransactionalProductionShadow, protocol_binding
+        from app.runtime_inventory import inspect_runtime_inventory
         identity_process = await asyncio.create_subprocess_exec(
             "git", "-C", str(BASE_DIR), "rev-parse", "HEAD",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -307,7 +308,7 @@ async def lifespan(app: FastAPI):
             RealChatGPTMessageSender(target_url=config.chatgpt.conversation_url,
                 conversation_id=config.chatgpt.conversation_id, gpt_id=config.chatgpt.gpt_id,
                 cdp_url=config.chatgpt.cdp_url), startup_fingerprint=compute_config_fingerprint(config),
-            handoff_manager=app_server_manager)
+            handoff_manager=app_server_manager, session_inventory=inspect_runtime_inventory)
         await production_shadow.recover()
 
     if config and config.canary_mode:

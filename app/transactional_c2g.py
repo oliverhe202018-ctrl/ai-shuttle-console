@@ -86,9 +86,10 @@ def workflow_lock(path):
 
 
 class TransactionalProductionShadow(ProductionShadow):
-    def __init__(self, *args, handoff_manager=None, **kwargs):
+    def __init__(self, *args, handoff_manager=None, session_inventory=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.handoff_manager = handoff_manager
+        self.session_inventory = session_inventory
 
     def connect(self):
         db = super().connect()
@@ -123,12 +124,20 @@ class TransactionalProductionShadow(ProductionShadow):
     async def quiescence(self):
         """One read-only inventory and fresh repository checkpoint; no grant/I/O."""
         cfg = await self.config()
-        sessions = production_session_liveness(cfg.codex.repo_path, cfg.codex.sessions_dir)
-        blockers = [r for r in sessions if r["blocking"]]
+        inventory = self._inventory(cfg)
+        sessions, blockers = inventory["sessions"], inventory["blockers"]
         snapshot = take_checkpoint_snapshot(cfg.codex.repo_path, active_sessions=blockers)
         return {"status": "PRODUCTION_WORKSPACE_GENUINELY_BUSY" if blockers else "PRODUCTION_QUIESCENCE_VERIFIED",
                 "reauth_status": None if blockers else "PHASE_2_7_TRANSACTIONAL_C2G_REAUTH_READY",
-                "sessions": sessions, "snapshot": snapshot, "transaction_authorized": False}
+                "sessions": sessions, "snapshot": snapshot, "inventory_scope": inventory["scope"],
+                "transaction_authorized": False}
+
+    def _inventory(self, cfg, exclude_thread=None):
+        if self.session_inventory is not None:
+            return self.session_inventory(cfg.codex.repo_path, cfg.codex.sessions_dir, exclude_thread)
+        sessions = production_session_liveness(cfg.codex.repo_path, cfg.codex.sessions_dir, exclude_thread)
+        return {"sessions": sessions, "blockers": [r for r in sessions if r["blocking"]],
+                "scope": {"session_roots": [cfg.codex.sessions_dir], "complete": True}}
 
     def parent_binding(self, cfg):
         return {"workspace": str(Path(cfg.codex.repo_path).resolve()),
@@ -165,6 +174,8 @@ class TransactionalProductionShadow(ProductionShadow):
         return {"id": row[0], "binding": json.loads(row[1]), "expires_at": row[2]}
 
     def _active(self, cfg, exclude_thread=None):
+        if self.session_inventory is not None:
+            return self._inventory(cfg, exclude_thread)["blockers"]
         return active_production_sessions(cfg.codex.repo_path, cfg.codex.sessions_dir, exclude_thread)
 
     async def _ready_page(self, cfg):

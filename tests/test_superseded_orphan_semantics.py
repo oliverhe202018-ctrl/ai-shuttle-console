@@ -73,10 +73,9 @@ def test_other_rollout_cannot_supersede(tmp_path):
     assert [r["thread_id"] for r in blockers(tmp_path)] == ["thread-a"]
 
 
-@pytest.mark.parametrize("thread_key", ["thread_id", "threadId"])
-def test_explicit_cross_thread_event_fails_closed(tmp_path, thread_key):
+def test_explicit_cross_thread_event_fails_closed(tmp_path):
     rollout(tmp_path, [event("task_started", "old"),
-                       event("task_started", "new", **{thread_key: "different-thread"}), event("task_complete", "new")])
+                       event("item_started", "old", thread_id="different-thread"), event("task_complete", "new")])
     with pytest.raises(ValueError, match="THREAD_MISMATCH"):
         blockers(tmp_path)
 

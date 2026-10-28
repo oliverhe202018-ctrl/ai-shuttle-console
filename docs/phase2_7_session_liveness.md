@@ -92,3 +92,65 @@ production quiescence or authorize a send.
 Phase 2.7.0.5 validation: 27 supersession/runtime regressions, 94 combined
 supersession/liveness/transactional tests, and full regression of **521 passed,
 1 skipped, 0 failed**, with three existing asynchronous cleanup warnings.
+
+## Schema-aware inventory and terminal audit (Phase 2.7.0.6)
+
+Installed CLI schema generation is read-only and does not start an app-server
+session. The audited installation identifies itself as `0.165.0-alpha.1.2`;
+its generated `TurnStatus` enum contains `completed`, `interrupted`, `failed`,
+and `inProgress`. API notifications and persisted rollout events are separate
+representations. The inspected official protocol also defines `turn_started`
+and `turn_complete` as aliases of the persisted `task_started` and
+`task_complete` events. Exact turn attribution is still required for closure.
+
+| Persisted field | Meaning and policy |
+| --- | --- |
+| Current `session_meta.payload.id` | Thread ownership; a different owner fails closed. |
+| `session_meta.payload.session_id` | Shared root session identity, not necessarily this thread. |
+| `forked_from_id`, `parent_thread_id` | Relationships, retained as references. |
+| `item_started` / `item_completed` `payload.thread_id` | Schema-defined item ownership; malformed or foreign owners fail closed. |
+| Collaboration sender/receiver/new-thread fields, queue resource IDs, tool arguments | Related resources, not inferred record ownership. |
+
+An explicitly declared paginated subagent prefix has different ownership
+semantics. With valid fork provenance, an explicit positive
+`subagent_history_start_ordinal`, and contiguous observed ordinals starting at
+zero, the parser retains earlier parent records as `RELATED_THREAD_REFERENCE`
+and inherited context. It does not project their starts or terminals into the
+child. Foreign metadata outside that prefix remains a real mismatch. An
+unproven, malformed, or truncated prefix cannot prove child idleness.
+
+This follows the inspected official
+[SessionMeta contract](https://github.com/openai/codex/blob/ce2d47bdc4dd2513d5b3567090593b07b0fdfa0a/codex-rs/protocol/src/protocol.rs#L3429)
+and [projection boundary](https://github.com/openai/codex/blob/ce2d47bdc4dd2513d5b3567090593b07b0fdfa0a/codex-rs/thread-store/src/local/thread_history_materialization.rs#L230).
+The official source revision is a semantic reference; it is not asserted to be
+the exact source revision of the installed desktop binary. Private evidence
+binds the installed executable hash, generated schemas, and observed records.
+
+A `turn_aborted` with reason `interrupted` remains an abort, not success.
+`stream_error` is documented as a disconnect/error being handled, possibly by
+retry. At an unclosed EOF it yields blocking `INTERRUPTED_OR_DISCONNECTED`;
+it never supplies an invented terminal. A later real terminal overrides that
+diagnostic. A final answer without a terminal yields blocking
+`CRASHED_OR_INCOMPLETE`: incompleteness is observed, its cause is not proven.
+An unanswered explicit human request is blocking `ACTIVE_WAITING_HUMAN_ACTION`.
+Quiet timestamps never resolve these states. Unknown outer record types and
+truncated JSON remain blocking; known context/communication metadata does not
+invent execution.
+
+Production startup installs the same runtime inventory provider for both the
+transaction and `/quiescence`. It enumerates current Codex app-server processes
+on supported x64 Windows hosts, reads only command/root parameters without
+attaching a debugger or executing target code, and retains only root variables.
+Every positively identified home/session root is inspected, including the
+configured root. Process-profile defaults are explicit; directory names and
+age do not exclude a root. Registries are opened with SQLite `mode=ro` and
+checked for production-cwd sessions missing from readable rollouts. Windows
+extended path spellings are normalized for that registry correlation.
+
+Unreadable process parameters, uncorrelated roots, corrupt inventories, and
+unresolved registered production rollouts produce `UNKNOWN_LIVENESS` blockers.
+The returned `inventory_scope.complete` distinguishes complete enumeration from
+an incomplete scope. No file is discarded as historical merely because it
+looks archived, is old, or has an empty queue. Exclusion requires positive
+evidence not currently supplied by an independent observer's `notLoaded` result.
+Synthetic tests inject runtime roots rather than inspect the operator's machine.

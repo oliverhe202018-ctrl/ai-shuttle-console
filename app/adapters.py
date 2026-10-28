@@ -1938,6 +1938,9 @@ class RealChatGPTMessageSender(IChatGPTMessageSender):
                 raise NotSentError("Rejected: writing block or canvas editor detected instead of genuine composer")
 
             selector = comp.get("selector")
+            if kwargs.get("production_shadow"):
+                if target_page.url != self.target_url or parsed.get("is_streaming") or comp.get("text"):
+                    raise NotSentError("PRODUCTION_CHATGPT_TARGET_NOT_READY")
             if comp.get("is_content_editable"):
                 await target_page.focus(selector)
                 await target_page.evaluate("""({sel, text}) => {
@@ -1958,7 +1961,8 @@ class RealChatGPTMessageSender(IChatGPTMessageSender):
             norm_rb = read_back if kwargs.get("production_shadow") else read_back.strip().replace("\r\n", "\n")
             norm_msg = message if kwargs.get("production_shadow") else message.strip().replace("\r\n", "\n")
             if norm_rb != norm_msg or compute_sha256(norm_rb) != content_hash:
-                raise NotSentError("Composer text mismatch: read back content does not match prepared report character-for-character")
+                raise NotSentError("PRODUCTION_COMPOSER_TEXT_MISMATCH" if kwargs.get("production_shadow") else
+                                   "Composer text mismatch: read back content does not match prepared report character-for-character")
 
             # Locate composer-associated send button using strict ownership model
             valid_send_locator, send_selector = await self._resolve_send_control(target_page, selector)

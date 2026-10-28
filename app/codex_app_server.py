@@ -448,12 +448,45 @@ class CodexAppServerManager:
 
 
     async def start_thread(self, cwd: str, title: Optional[str] = None, experimental_api: bool = False) -> dict:
+        if self.production_shadow_mode:
+            raise ValueError("PRODUCTION_DEVELOPMENT_EXECUTION_FORBIDDEN")
         await self.ensure_started()
         return await self.adapter.start_thread(cwd=cwd, title=title, experimental_api=experimental_api)
 
     async def start_turn(self, thread_id: str, prompt: str) -> dict:
+        if self.production_shadow_mode:
+            raise ValueError("PRODUCTION_DEVELOPMENT_EXECUTION_FORBIDDEN")
         await self.ensure_started()
         return await self.adapter.start_turn(thread_id=thread_id, prompt=prompt)
+
+    async def start_readonly_handoff(self, workspace: str) -> dict:
+        """Narrow capability: new thread, fixed protocol, OS sandbox read-only.
+
+        No caller-supplied prompt, development thread, resume, or queue endpoint.
+        The transactional coordinator consumes its parent capture grant first.
+        """
+        from app.production_shadow import build_handoff_instruction_prompt
+        if not self.production_shadow_mode:
+            raise ValueError("PRODUCTION_SHADOW_CONFIG_REQUIRED")
+        await self.ensure_started()
+        result = await self.rpc_client.call("thread/start", {
+            "cwd": workspace, "sandbox": "read-only", "approvalPolicy": "never",
+            "experimentalApi": False,
+        })
+        thread = result.get("thread", {})
+        tid = thread.get("id")
+        from app.canary import same_path, real_uuid
+        real_uuid(tid)
+        if not thread.get("cwd") or not same_path(thread["cwd"], workspace):
+            raise ValueError("ATOMIC_HANDOFF_WORKSPACE_MISMATCH")
+        result = await self.rpc_client.call("turn/start", {
+            "threadId": tid, "input": [{"type": "text", "text": build_handoff_instruction_prompt()}],
+            "cwd": workspace, "approvalPolicy": "never", "sandboxPolicy": {"type": "readOnly"},
+        })
+        turn = result.get("turn", {}).get("id")
+        if not turn:
+            raise ValueError("ATOMIC_HANDOFF_TURN_ID_MISSING")
+        return {"thread_id": tid, "turn_id": turn}
 
     async def shutdown(self) -> None:
         self.initialized = False

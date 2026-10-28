@@ -1,6 +1,6 @@
 # Phase 2.7 — Production Shadow implementation
 
-Status: `PHASE_2_7_PINNED_SOURCE_READY`. Regression: **411 passed, 1 skipped**, including **67 Production Shadow tests**. Live acceptance has not run. See [the implementation report](phase2_7_implementation_report.md).
+Status: transactional Capture-to-C2G implemented. Live transactional execution has not run. See [the transaction contract](phase2_7_transactional_c2g.md) for authorization, recovery, and validation.
 
 The planner remains the configured ChatGPT conversation. The Shuttle transports the exact pinned Codex final response, without an envelope, nonce, summary, or generated instruction. A returned prompt is extracted using the existing strict planner classifier and is prepared for review without execution.
 
@@ -79,20 +79,17 @@ Phase 2.7.0 replaces dynamic "latest final answer in source thread" resolution w
 - Shadow rejects legacy transfer and configuration mutations. Production observation must use the dedicated Shadow flow.
 - Auto arm/authorize/start/resume, child authorization, iteration execution, Codex queue submission, and thread resume are rejected. These restrictions exist in server routing and execution components.
 - Controlled Auto authorization remains available for Canary configurations. Shadow never creates an Auto child authorization or a G2C token.
-- The coordinator receives no Codex queue or lifecycle adapter.
+- The coordinator receives no Codex queue. Its lifecycle capability only creates a new read-only handoff with the fixed protocol; generic development starts and resumes are denied.
 - Production Git operations are limited to status, diff, ls-files, branch inspection, and rev-parse with optional index locking disabled. No checkout, reset, stash, clean, commit, or branch switch runs against production.
 
 ## Private API and operator sequence
 
-1. `GET /api/production-shadow/status` displays exact private target identities, pinned source details, and the configuration fingerprint in the separate Production Shadow UI.
-2. `POST /api/production-shadow/baseline` requires target confirmation and the displayed fingerprint. It verifies the exact registry pair, rollout/header/index/title/cwd, branch, pinned source artifact integrity, and genuine browser composer on the exact authenticated page.
-3. `POST /api/production-shadow/rebind-source` allows explicit operator rebinding of the source artifact prior to any send attempt.
-4. `POST /api/production-shadow/prepare` creates `PRODUCTION C2G PREPARED — NOT SENT`. Preview evidence includes pinned source IDs/time, exact payload/hash/character count, first/last preview, destination, config fingerprint, repository HEAD, and `Payload rewrite: NONE`. Source, repository, and ChatGPT baselines must remain unchanged.
-5. `POST /api/production-shadow/authorize` requires a human confirmation and an exact binding to transfer ID, destination, payload hash, source message/turn IDs, fingerprint, and Shadow mode. It returns an expiring one-use token. It does not send.
-6. `POST /api/production-shadow/send` is a separate operator action. It rechecks all baselines and integrity. A durable SQLite compare-and-swap consumes the sole send attempt before browser I/O. The live sender checks raw composer equality and SHA-256 before one click, then verifies one new semantic user delivery. Unknown delivery is terminal and never resent. Config filename changes and service restarts cannot reset the ledger.
-7. `POST /api/production-shadow/observe` reads a completed new assistant response after the delivered user turn, rejecting stale message IDs, streaming, intervening users, and missing completion evidence. Classification is `NEXT_CODEX_PROMPT_FOUND`, `PLANNER_STOP_REQUESTED`, `PLANNER_NO_ACTIONABLE_PROMPT`, `PLANNER_RESPONSE_AMBIGUOUS`, or `PLANNER_RESPONSE_ERROR`.
-8. A single extracted prompt is stored with exact provenance/hash/character count and an identical prepared G2C message. Its state is `PRODUCTION_G2C_PREPARED_NOT_AUTHORIZED`, with `g2c_rewrite_count = 0`. The run stops at `PRODUCTION_G2C_PREPARED_FOR_REVIEW`. No queue or execution endpoint exists in this flow.
-9. Repository postchecks compare branch, HEAD, status, and dirty bytes. New changes are classified `PINNED_SOURCE_STALE_AFTER_REPOSITORY_CHANGE` or `PRODUCTION_REPOSITORY_CHANGED_DURING_SHADOW` for review, without attributing them to Shuttle.
+1. `GET /api/production-shadow/status` displays private exact targets, configuration fingerprint, and the deterministic parent binding.
+2. `POST /api/production-shadow/authorize-atomic-parent` requires exact binding and explicit operator confirmation. The expiring one-use grant binds the controlled capture protocol, with no pre-existing payload hash.
+3. `POST /api/production-shadow/atomic-capture-send` validates the parent, checks readiness, captures A, generates one new read-only handoff, checks B, verifies its immutable pin, and checks final Snapshot C. Only then does it atomically derive/consume a C2G-only child and the fixed durable send budget. The sender verifies composer contents and clicks once. There is no automatic retry.
+4. The same operation observes the new planner response read-only. If completion takes longer than the observation window, `POST /api/production-shadow/observe` permits read-only reconciliation after confirmed delivery. It cannot resend.
+5. Strict extraction prepares an identical G2C message with provenance and zero rewrites, without executable authorization. Stop/no-action classifications finish without invented work; ambiguity and errors block.
+6. Repository postchecks record external changes without attributing them to Shuttle. Old baseline/prepare/authorize/send/rebind endpoints are blocked in Production Shadow. Dedicated capture cannot produce a payload that an old manual route can send.
 
 The persistent private record contains source and destination turn/message IDs, timestamps, raw/semantic hashes, planner classification, exact payloads, transfer IDs, fingerprint, and pre/post repository evidence. Restart only reads these records. An attempted send cannot resume automatically; a prepared G2C remains unauthorized.
 
@@ -102,4 +99,4 @@ All real configuration, browser discovery, target verification, raw prompts, and
 
 Implementation readiness does not imply live acceptance. Current private readiness and any branch/browser prerequisites are recorded in `runtime/private-reports/phase2_7/configuration-readiness.json` and `runtime/private-reports/phase2_7/fresh-handoff-binding/precheck.json`.
 
-Live acceptance requires separate operator authorization, the intended branch already active, an authenticated browser open on exactly one configured production conversation, a verified pinned source artifact, valid repository freshness, and review of the exact prepared C2G payload. The operator then authorizes one C2G and sends it once. Observe the planner, prepare G2C if actionable, and stop. Phase 2.7.1 requires separate review and authorization and is outside this implementation.
+Live acceptance requires separate operator parent authorization, the intended branch already active, and an authenticated browser open on exactly one configured production conversation with an empty genuine composer. Use **Atomic Capture & Send Once** after confirming the exact targets. The transaction produces and verifies its own fresh pin before the final freshness gate. Phase 2.7.1 and execution of any returned prompt require separate review and authorization.

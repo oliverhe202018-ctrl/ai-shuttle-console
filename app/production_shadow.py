@@ -337,6 +337,7 @@ def take_checkpoint_snapshot(workspace, active_sessions=None, ignore_patterns=No
         "diff_hash": snapshot_data["diff_hash"],
         "dirty_file_hashes": dirty_file_hashes,
         "untracked_hashes": untracked_hashes,
+        "active_sessions": snapshot_data["active_sessions"],
     }, sort_keys=True)
     snapshot_data["fingerprint"] = compute_sha256(fingerprint_canonical)
     return snapshot_data
@@ -393,7 +394,9 @@ def classify_checkpoint_delta(snapshot_a, snapshot_b):
             changed_paths.append(k)
 
     if not changed_paths:
-        return "ATOMIC_PRODUCTION_CHECKPOINT_CAPTURED", []
+        # Index/mode/deletion/rename-only deltas may not appear in content maps.
+        # An unequal fingerprint without an explained content delta is UNKNOWN.
+        return "ATOMIC_HANDOFF_CAPTURE_RACED_WITH_PRODUCTION_CHANGE", {"unknown": ["UNEXPLAINED_REPOSITORY_DELTA"]}
 
     material = []
     non_semantic = []
@@ -744,6 +747,11 @@ class ProductionShadow:
             turns = parsed.get("turns", [])
             delivered = r["delivery"]["user_turn_id"]
             users = [t for t in turns if t.get("role") == "user" and t.get("turn_id") == delivered]
+            if users and any(t.get("role") == "user" and t.get("turn_index", -1) > users[0].get("turn_index", -1) for t in turns):
+                r.update(status="PRODUCTION_CHATGPT_INTERLEAVING_DETECTED",
+                         acceptance_status="PHASE_2_7_PRODUCTION_SHADOW_BLOCKED")
+                self.save(r)
+                return r
             assistant = parsed.get("latest_assistant_turn") or {}
             baseline_ids = {t.get("turn_id") for t in r["chatgpt_baseline"].get("turns", [])}
             if (len(users) != 1 or not assistant.get("turn_id") or not assistant.get("message_id")
@@ -767,12 +775,16 @@ class ProductionShadow:
             classification = getattr(classification, "value", classification)
             r.update(planner={"assistant_turn_id": assistant["turn_id"], "assistant_message_id": assistant["message_id"],
                               "response": text, "response_hash": compute_sha256(text), "completed_at": now(),
+                              "completion_evidence": {"is_completed": parsed["is_completed"],
+                                                      "is_streaming": bool(parsed.get("is_streaming")),
+                                                      "after_user_turn_id": delivered},
                               "classification": classification, "provenance": provenance, "reason": reason})
             if classification == "NEXT_CODEX_PROMPT_FOUND":
                 # Extraction is the sole source; transport never trims or adds text.
                 r["g2c"] = {"transfer_id": "production-g2c-" + secrets.token_hex(12), "prompt": prompt,
                             "message": prompt, "hash": compute_sha256(prompt), "char_count": len(prompt),
                             "source_assistant_message_id": assistant["message_id"], "targets": r["targets"],
+                            "source_assistant_turn_id": assistant["turn_id"],
                             "config_fingerprint": r["config_fingerprint"], "repo_baseline": r["repo_pre"],
                             "payload_rewrite": "NONE", "g2c_rewrite_count": 0,
                             "status": "PRODUCTION_G2C_PREPARED_NOT_AUTHORIZED"}
@@ -785,7 +797,7 @@ class ProductionShadow:
             if r["repo_post"] != r["repo_pre"]:
                 r["status"] = "PRODUCTION_REPOSITORY_CHANGED_DURING_SHADOW"
             r["acceptance_status"] = ("PHASE_2_7_PRODUCTION_SHADOW_VERIFIED"
-                if r["status"] in ("PRODUCTION_G2C_PREPARED_FOR_REVIEW", "PLANNER_STOP_REQUESTED")
+                if r["status"] in ("PRODUCTION_G2C_PREPARED_FOR_REVIEW", "PLANNER_STOP_REQUESTED", "PLANNER_NO_ACTIONABLE_PROMPT")
                 else "PHASE_2_7_PRODUCTION_SHADOW_BLOCKED")
             r["completed_at"] = now()
             self.save(r)

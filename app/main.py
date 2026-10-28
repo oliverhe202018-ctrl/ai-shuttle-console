@@ -290,14 +290,16 @@ async def lifespan(app: FastAPI):
             auto_coordinator.codex_queue = real_codex_queue
 
     if config and config.production_shadow_mode:
-        from app.production_shadow import ProductionShadow
+        from app.transactional_c2g import TransactionalProductionShadow
         # Fixed private ledger prevents selecting another config filename to reset the one-send budget.
-        production_shadow = ProductionShadow(
+        production_shadow = TransactionalProductionShadow(
             BASE_DIR / "runtime" / "private-reports" / "phase2_7" / "shadow.db",
             db.get_config, codex_observer, real_chatgpt_observer,
             RealChatGPTMessageSender(target_url=config.chatgpt.conversation_url,
                 conversation_id=config.chatgpt.conversation_id, gpt_id=config.chatgpt.gpt_id,
-                cdp_url=config.chatgpt.cdp_url), startup_fingerprint=compute_config_fingerprint(config))
+                cdp_url=config.chatgpt.cdp_url), startup_fingerprint=compute_config_fingerprint(config),
+            handoff_manager=app_server_manager)
+        await production_shadow.recover()
 
     if config and config.canary_mode:
         await transfer_snapshot(config, repair=True)
@@ -324,9 +326,8 @@ async def production_shadow_gate(request: Request, call_next):
             return JSONResponse(status_code=409, content={"detail": "PRODUCTION_SHADOW_USE_DEDICATED_ENDPOINTS"})
     if shadow and request.method in ("POST", "PUT", "PATCH", "DELETE"):
         path = request.url.path
-        allowed = {"/api/production-shadow/baseline", "/api/production-shadow/prepare",
-                   "/api/production-shadow/authorize", "/api/production-shadow/send",
-                   "/api/production-shadow/observe", "/api/production-shadow/rebind-source"}
+        allowed = {"/api/production-shadow/authorize-atomic-parent",
+                   "/api/production-shadow/atomic-capture-send", "/api/production-shadow/observe"}
         if path not in allowed:
             reason = ("PRODUCTION_AUTO_MODE_NOT_AUTHORIZED" if path.startswith("/api/auto/")
                       or "resume" in path else "PRODUCTION_G2C_QUEUE_FORBIDDEN" if "queue" in path
@@ -336,12 +337,14 @@ async def production_shadow_gate(request: Request, call_next):
 
 
 class ShadowRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     config_fingerprint: str = ""
     targets_confirmed: bool = False
     binding: Dict[str, Any] = {}
     operator_confirmed: bool = False
     token: str = ""
     pinned_source: Dict[str, Any] = {}
+    ttl_seconds: int = 600
 
 
 async def shadow_operation(method, *args):
@@ -388,6 +391,16 @@ async def shadow_observe():
 @app.post("/api/production-shadow/rebind-source")
 async def shadow_rebind_source(req: ShadowRequest):
     return await shadow_operation("rebind_source", req.pinned_source)
+
+
+@app.post("/api/production-shadow/authorize-atomic-parent")
+async def shadow_atomic_parent(req: ShadowRequest):
+    return await shadow_operation("authorize_parent", req.binding, req.operator_confirmed, req.ttl_seconds)
+
+
+@app.post("/api/production-shadow/atomic-capture-send")
+async def shadow_atomic_capture_send(req: ShadowRequest):
+    return await shadow_operation("capture_and_send_atomic_c2g", req.token)
 
 
 async def runtime_config_error(cfg):
